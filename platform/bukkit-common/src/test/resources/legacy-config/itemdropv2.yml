@@ -1,0 +1,33 @@
+general:
+  enabled: true
+  language: "en-US"
+  mc-language: "en_us"
+  mc-language-check-updates: true
+  mc-language-check-updates-message: false
+  mc-language-check-updates-interval: 21600
+  mc-language-auto-update: true
+  mc-language-auto-updates-message: false
+  mc-language-cant-find-item-in-lang-message: false
+  blocked-worlds:
+    - "blocked-world1"
+    - "blocked-world2"
+
+items:
+  async: true
+  item-age-type: "plugin"
+  custom-item-death-time: false
+  hopper-pickup-owner: false
+  placeholder:
+    owner-player-prefix: "&7[&6%owner_time%&r&7]&r&7[&a%player_name%&7]&r "
+    item-time-left: "&7[&e%item_lived_time_left%&r&7]&r"
+  display-name-format:
+    single: "%owner_player_prefix%%item_display_name%%item_time_left% &cx%amount%"
+    multi: "%owner_player_prefix%%item_display_name%%item_time_left% &cx%amount%"
+  owner-owns-time: 30
+  item-merge-owner-time-mode: "max"
+  item-merge-lived-time-mode: "max"
+  player-pickup-warning-message-delay: 5
+  player-pickup-warning-message-type: "action-bar"
+  item-owner-decide: "max_damage"
+  player-damage-entity-min-health-percent: 50
+  item-name-rarity-display: true

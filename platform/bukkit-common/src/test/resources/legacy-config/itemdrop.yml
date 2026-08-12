@@ -1,0 +1,21 @@
+General:
+  Enable: true
+  Version: 0.1
+  Language: en_us
+  MCLanguage: en_us
+  Blocked_Worlds:
+    - blocked_world
+    - blocked_world2
+
+Item_Hologram:
+  Owner_Player: '&7[&a%player_name%&7]&r '
+  Item_Display_Name: '%item_display_name%'
+  Owner_Owns_Time: 30
+  Item_Marge_Mode: 0
+  Player_Can_Not_PickUp_Item_Message_Delay: 5
+  Player_Damage_Entity_Min_Health_Percent: 50
+  Item_Owner_Judge: max_damage
+  Item_Name_Rarity_Display: true
+  Display:
+    Single: '{Owner_Player}{Item_Display_Name}'
+    Multi: '{Owner_Player}{Item_Display_Name} &cx{Amount}'

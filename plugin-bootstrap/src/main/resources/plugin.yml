@@ -1,0 +1,60 @@
+name: ItemDropV2
+version: '${pluginVersion}'
+build:
+  git-commit: '${gitCommitShort}'
+  git-dirty: '${gitDirty}'
+main: com.github.command1264.itemdropv2.ItemDropV2Plugin
+api-version: '1.14'
+load: POSTWORLD
+softdepend:
+  - PlaceholderAPI
+description: ItemDropV2 Kotlin rewrite
+authors:
+  - Command1264
+commands:
+  itemdrop:
+    aliases:
+      - idrop
+      - drop
+      - itemdrops
+      - idrops
+      - drops
+    description: ItemDropV2 management command
+    usage: /<command> help
+permissions:
+  itemdrop.*:
+    default: op
+    children:
+      itemdrop.commands.*: true
+      itemdrop.event.*: true
+  itemdrop.commands.*:
+    default: op
+    children:
+      itemdrop.commands.basic: true
+      itemdrop.commands.help: true
+      itemdrop.commands.info: true
+      itemdrop.commands.reload: true
+      itemdrop.commands.toggle: true
+  itemdrop.commands.basic:
+    default: true
+  itemdrop.commands.help:
+    default: true
+  itemdrop.commands.info:
+    default: true
+  itemdrop.commands.reload:
+    default: op
+  itemdrop.commands.toggle:
+    default: op
+  itemdrop.event.*:
+    default: op
+    children:
+      itemdrop.event.pickup.*: true
+  itemdrop.event.pickup.*:
+    default: op
+    children:
+      itemdrop.event.pickup: true
+      itemdrop.event.pickup.other: true
+  itemdrop.event.pickup:
+    default: true
+  itemdrop.event.pickup.other:
+    default: op

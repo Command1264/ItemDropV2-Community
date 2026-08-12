@@ -1,0 +1,51 @@
+command:
+  no-permission: '&c你沒有權限使用此指令。'
+
+  help:
+    header: '&6ItemDropV2 管理指令：'
+
+    toggle: '&e/itemdrop toggle [on|off] &7- 開啟或關閉掉落物名稱顯示'
+
+    reload: '&e/itemdrop reload &7- 重新載入並驗證設定'
+
+    info: '&e/itemdrop info|about &7- 顯示插件資訊'
+
+  info: '&6ItemDropV2 &fv%version% &7（backend: %backend%）'
+
+  toggle:
+    enabled: '&a已開啟掉落物名稱顯示。'
+
+    disabled: '&a已關閉掉落物名稱顯示。'
+
+    already-enabled: '&e掉落物名稱顯示已經是開啟狀態。'
+
+    already-disabled: '&e掉落物名稱顯示已經是關閉狀態。'
+
+    usage: '&c用法：/itemdrop toggle [on|off]'
+
+    failed: '&c無法更新顯示狀態；目前執行中設定未變更，請查看伺服器紀錄。'
+
+  reload:
+    success: '&aItemDropV2 設定已重新載入。'
+
+    failed: '&c設定載入或寫入失敗；目前執行中設定未變更，請查看伺服器紀錄。'
+
+    language-fallback-created: '&e找不到 %language% 語言檔，已建立使用英文內容的 %language%.yml，請自行翻譯後再次 reload。'
+
+  failure-reason: '&c原因：&f%reason%'
+
+  config-parse-recovered: '&e偵測到無法解析的設定並已修復：&f%items%&e；原始檔備份為 &f%backup%&e。'
+
+  root-usage: '&c用法：/itemdrop <help|info|about|reload|toggle>'
+
+pickup:
+  no-permission: '&c你沒有拾取物品的權限（%permission%）。'
+
+  other-owner: '&c這個物品目前可由 &f%owner_names%&c 拾取，還有 &f%seconds% &c秒保護時間。'
+
+display:
+  no-owner: '無'
+
+  lifetime-permanent: '永久'
+
+  lifetime-unknown: '未知'

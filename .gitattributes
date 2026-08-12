@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+
+# 避免 GitHub 將 Gradle Wrapper 誤判為一般建置輸出。
+gradle/wrapper/gradle-wrapper.jar binary

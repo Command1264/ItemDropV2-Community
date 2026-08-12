@@ -1,0 +1,51 @@
+command:
+  no-permission: '&cYou do not have permission to use this command.'
+
+  help:
+    header: '&6ItemDropV2 management commands:'
+
+    toggle: '&e/itemdrop toggle [on|off] &7- Enable or disable dropped-item names'
+
+    reload: '&e/itemdrop reload &7- Reload and validate the configuration'
+
+    info: '&e/itemdrop info|about &7- Show plugin information'
+
+  info: '&6ItemDropV2 &fv%version% &7(backend: %backend%)'
+
+  toggle:
+    enabled: '&aDropped-item names are now enabled.'
+
+    disabled: '&aDropped-item names are now disabled.'
+
+    already-enabled: '&eDropped-item names are already enabled.'
+
+    already-disabled: '&eDropped-item names are already disabled.'
+
+    usage: '&cUsage: /itemdrop toggle [on|off]'
+
+    failed: '&cUnable to update display state; runtime settings were retained. Check the server log.'
+
+  reload:
+    success: '&aItemDropV2 configuration reloaded.'
+
+    failed: '&cConfiguration reload or update failed; runtime settings were retained. Check the server log.'
+
+    language-fallback-created: '&eNo %language% language file was found. Created %language%.yml with English text; translate it and reload again.'
+
+  failure-reason: '&cReason: &f%reason%'
+
+  config-parse-recovered: '&eInvalid configuration was repaired: &f%items%&e; the original was backed up as &f%backup%&e.'
+
+  root-usage: '&cUsage: /itemdrop <help|info|about|reload|toggle>'
+
+pickup:
+  no-permission: '&cYou do not have permission to pick up items (%permission%).'
+
+  other-owner: '&cThis item can be picked up by &f%owner_names%&c for another &f%seconds% &cseconds.'
+
+display:
+  no-owner: 'None'
+
+  lifetime-permanent: 'Permanent'
+
+  lifetime-unknown: 'Unknown'

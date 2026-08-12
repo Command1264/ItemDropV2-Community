@@ -1,0 +1,30 @@
+[versions]
+kotlin = "2.4.10"
+shadow = "9.6.1"
+detekt = "2.0.0-alpha.5"
+spotless = "8.8.0"
+ktlint = "1.7.1"
+junit = "5.14.4"
+gson = "2.14.0"
+spigot-api = "1.14.4-R0.1-SNAPSHOT"
+placeholder-api = "2.12.3"
+bstats = "3.2.1"
+sqlite-jdbc = "3.27.2.1"
+
+[libraries]
+kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+gson = { module = "com.google.code.gson:gson", version.ref = "gson" }
+spigot-api = { module = "org.spigotmc:spigot-api", version.ref = "spigot-api" }
+placeholder-api = { module = "me.clip:placeholderapi", version.ref = "placeholder-api" }
+bstats-bukkit = { module = "org.bstats:bstats-bukkit", version.ref = "bstats" }
+sqlite-jdbc = { module = "org.xerial:sqlite-jdbc", version.ref = "sqlite-jdbc" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
+detekt = { id = "dev.detekt", version.ref = "detekt" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

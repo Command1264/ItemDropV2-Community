@@ -1,0 +1,12 @@
+# ItemDropV2 掉落物壽命設定格式版本。
+schema-version: 1
+
+# 預設壽命（秒）。
+# -1 代表永不因 ItemDropV2 壽命到期而消失；0 代表生成後立即消失；正整數最多可到 2^63-1。
+default-seconds: 300
+
+# 依 Bukkit Material 名稱覆寫預設壽命。名稱不分大小寫，載入後會正規化為大寫。
+# 為維持同一 JAR 支援 1.14～26.2，當前 server 不認識的新版本 Material 仍會保留，不會阻止插件啟用。
+materials:
+  # Minecraft 的 Nether Star 掉落物預設會保留 10 分鐘。
+  NETHER_STAR: 600

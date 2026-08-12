@@ -1,0 +1,116 @@
+# ItemDropV2 設定格式版本。未知版本會安全停用，避免錯誤解讀或覆寫設定。
+schema-version: 1
+
+general:
+  # 是否啟用掉落物名稱顯示。可用 /itemdrop toggle [on|off] 即時切換。
+  enabled: true
+
+  # 插件指令、提示與顯示文字語系，例如 zh_tw、en_us、ja_jp。
+  # 語言檔位於 plugins/ItemDropV2/languages/；缺少自訂語系時會建立英文範本。
+  language: zh_tw
+
+  # 掉落物使用的 Minecraft 官方語系代碼，例如 en_us、zh_tw。未設定時相容性預設為 en_us。
+  minecraft-language: en_us
+
+  # 下列世界不修改掉落物。世界名稱會精確比對並拒絕空白、重複或控制字元。
+  blocked-worlds:
+    - blocked-world1
+    - blocked-world2
+
+items:
+  processing:
+    # 每個 server tick 優先容納在精確 20-tick 相位的 Item 數量。
+    # 同 tick 註冊量超過此值時，超額 Item 會分散到負載較低且等待時間最接近 20 ticks 的槽。
+    maximum-items-per-tick: 256
+
+  virtual-stacking:
+    # 實驗性超量堆疊；完整 server matrix 驗證完成前預設關閉。
+    enabled: false
+
+    # Entity ItemStack 的 Count 呈現方式；PDC virtual amount 始終是真實數量。
+    # proportional：依虛擬上限比例映射到 1..64（預設）。
+    # count-capped：1..64 使用實際數量，超過 64 固定為 64。
+    # minimal：保留舊行為，通常為 1，達虛擬上限時才使用原生滿堆疊 sentinel。
+    carrier-amount-mode: proportional
+
+    # 單一 Item Entity 最多代表幾組原生堆疊；實際上限會乘上該物品的原生 stack size。
+    # 例如 128 組代表一般物品 8192 個、16 上限物品 2048 個、不可堆疊物品 128 個。
+    maximum-native-stacks-per-entity: 128
+
+    unstackable-items:
+      # 是否允許 metadata 完全相同的原生不可堆疊物品進行虛擬合併。
+      # 玩家拾取時仍逐格放入，漏斗／漏斗礦車每次只搬運一個。
+      enabled: false
+
+    merge:
+      # 每 tick 最多比較的候選 pair，以及最多派送的 ItemMergeEvent。
+      comparisons-per-tick: 256
+
+      events-per-tick: 64
+
+      # 其他插件取消主動派送的 ItemMergeEvent 後，同一 pair 暫停重試的秒數。
+      retry-backoff-seconds: 5
+
+  rarity-display:
+    # 是否依照目前 Minecraft 版本的原生物品 rarity 顯示名稱顏色。
+    # 物品自訂名稱已包含顏色時，自訂顏色優先。
+    enabled: true
+
+  merge:
+    # 合併剩餘秒數：average（平均）、maximum（取較久）或 minimum（取較短）。
+    lifetime-strategy: average
+
+    # 合併擁有權保護剩餘秒數：average（平均）、maximum（取較久）、minimum（取較短）或
+    # reset（重設為目前 ownership.protection-seconds；若為 0，則清除合併結果的擁有權）。
+    ownership-strategy: average
+
+  ownership:
+    # 方塊由玩家破壞時，是否把該玩家 UUID 記錄到掉落物的 PDC；不受 general.enabled 影響。
+    enabled: true
+
+    # 擁有者保護期限（秒）；期限內只有 eligible owner 或具繞過權限的玩家可拾取。
+    protection-seconds: 30
+
+    entity:
+      # Entity 掉落物歸屬策略：highest-damage、first-hit 或 final-hit。
+      strategy: highest-damage
+
+      # 得主至少須累積造成死亡時最大血量的多少百分比；回血不會倒扣已累積的有效傷害。
+      minimum-damage-percent-of-max-health: 50.0
+
+      # 連續多少秒沒有新的合資格傷害後，清除該 Entity 的整場傷害紀錄。
+      combat-timeout-seconds: 300
+
+    # 擁有者名稱前綴。多人格式另以 %additional_owner_count% 顯示其他可拾取人數。
+    # 多位可拾取玩家時，每隔此秒數切換目前顯示的玩家。
+    display:
+      rotation-seconds: 5
+
+      single-owner-prefix: '&7[&6%protection_remaining%&7][&a%player_name%&7]&r '
+
+      multiple-owners-prefix: '&7[&6%protection_remaining%&7][&a%player_name%&7]&e+%additional_owner_count%&r '
+
+    # 是否允許漏斗或漏斗礦車吸取仍在擁有者保護期內的物品。
+    allow-hopper-pickup: false
+
+    # Creative 背包沒有空格，且相同物品的既有 stack 也沒有容量時，如何處理 virtual carrier：
+    # destroy 與原版一致，直接消耗地面物品；deny 則保留地面物品。
+    creative-no-capacity-pickup: destroy
+
+    # 玩家無法拾取時，兩次提示之間至少間隔幾秒；0 代表每次都提示。
+    pickup-warning-cooldown-seconds: 5
+
+    # 拾取拒絕提示位置：action-bar 或 chat。
+    pickup-warning-message-type: action-bar
+
+  display-name-format:
+    # 內建 placeholder：
+    # %item_display_name%、%amount%、%owner%、%owner_count%、%other_owner_count%、
+    # %protection_remaining%、%lifetime_elapsed%、%lifetime_remaining%。
+    # 三個時間 placeholder 以年-月-日 時:分:秒顯示；1 月固定 30 天、1 年固定 12 月。
+    # 省略前方為 0 的單位，例如 5 秒為 5、65 秒為 1:05、1 天為 1 00:00:00。
+    # 安裝 PlaceholderAPI 時也可使用 %identifier_parameters%。
+    # 未安裝 PlaceholderAPI 時，外部 placeholder 會原樣保留，插件仍可正常啟用。
+    single: '&f%item_display_name% &7[&b%lifetime_elapsed%&7/&e%lifetime_remaining%&7]'
+
+    multi: '&f%item_display_name% &cx%amount% &7[&b%lifetime_elapsed%&7/&e%lifetime_remaining%&7]'
