@@ -29,6 +29,7 @@ import org.bukkit.configuration.ConfigurationSection
 @Suppress("LargeClass", "TooManyFunctions", "LongMethod")
 public class BukkitDisplaySettingsLoader(
     private val paperClientSideTranslationSettingSupported: Boolean,
+    private val virtualStackingSettingSupported: Boolean = true,
 ) {
     public constructor() : this(false)
 
@@ -50,7 +51,12 @@ public class BukkitDisplaySettingsLoader(
         val processing = readItemProcessingSettings(configuration, errors)
         val mergeLifetimeStrategy = readMergeLifetimeStrategy(configuration, errors)
         val mergeOwnershipStrategy = readMergeOwnershipStrategy(configuration, errors)
-        val virtualStacking = readVirtualStackingSettings(configuration, errors)
+        val virtualStacking =
+            if (virtualStackingSettingSupported) {
+                readVirtualStackingSettings(configuration, errors)
+            } else {
+                VirtualItemStackingSettings(enabled = false)
+            }
         val paperClientSideTranslationEnabled =
             if (paperClientSideTranslationSettingSupported) {
                 readOptionalBoolean(configuration, PAPER_CLIENT_SIDE_TRANSLATION_PATH, true, errors)

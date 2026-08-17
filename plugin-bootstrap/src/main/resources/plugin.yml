@@ -16,9 +16,6 @@ commands:
     aliases:
       - idrop
       - drop
-      - itemdrops
-      - idrops
-      - drops
     description: ItemDropV2 management command
     usage: /<command> help
 permissions:

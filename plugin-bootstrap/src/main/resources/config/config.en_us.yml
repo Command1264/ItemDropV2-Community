@@ -1,0 +1,89 @@
+# ItemDropV2 configuration schema version. Unknown versions disable the plugin safely to avoid misreading or overwriting settings.
+schema-version: 1
+
+general:
+  # Whether item entity name display is enabled. Use /itemdrop toggle [on|off] to change it at runtime.
+  enabled: true
+
+  # Locale for plugin commands, notices, and display text. Built-in choices are en_us and zh_tw; custom language files are also supported.
+  # Locale codes are case-insensitive. Files are stored in plugins/ItemDropV2/languages/; missing custom locales receive an English template.
+  language: en_us
+
+  # Official Minecraft language ID used for item entities. IDs are case-insensitive and availability depends on the server's Minecraft version.
+  # Examples: en_us, zh_tw. Language ID list: https://minecraft.wiki/w/Language
+  minecraft-language: en_us
+
+  # Item entities are not modified in these worlds. World names require an exact match and reject blanks, duplicates, and control characters.
+  blocked-worlds:
+    - blocked-world1
+    - blocked-world2
+
+items:
+  processing:
+    # Preferred number of Items assigned to exact 20-tick phases per server tick.
+    # Excess registrations are distributed to the least-loaded slot whose wait remains closest to 20 ticks.
+    maximum-items-per-tick: 256
+
+  rarity-display:
+    # Whether names use the native item rarity color for the current Minecraft version.
+    # A color already present in a custom item name takes priority.
+    enabled: true
+
+  merge:
+    # Merged remaining lifetime: average, maximum (longer), or minimum (shorter).
+    lifetime-strategy: average
+
+    # Merged ownership protection remaining time: average, maximum (longer), minimum (shorter), or
+    # reset (use the current ownership.protection-seconds; 0 clears ownership from the merge result).
+    ownership-strategy: average
+
+  ownership:
+    # Whether a player breaking a block is recorded in the dropped item's PDC as owner; independent of general.enabled.
+    enabled: true
+
+    # Ownership protection duration in seconds; only eligible owners or players with bypass permission may pick up during this period.
+    protection-seconds: 30
+
+    entity:
+      # Entity drop ownership strategy: highest-damage, first-hit, or final-hit.
+      strategy: highest-damage
+
+      # The winner must deal at least this percentage of the entity's maximum health by the time it dies; healing does not reduce credited damage.
+      minimum-damage-percent-of-max-health: 50.0
+
+      # Clear the entity's entire combat record after this many seconds without new eligible damage.
+      combat-timeout-seconds: 300
+
+    # Owner name prefix. The multi-owner format uses %additional_owner_count% for other eligible players.
+    # When multiple players are eligible, rotate the currently displayed player at this interval in seconds.
+    display:
+      rotation-seconds: 5
+
+      single-owner-prefix: '&7[&6%protection_remaining%&7][&a%player_name%&7]&r '
+
+      multiple-owners-prefix: '&7[&6%protection_remaining%&7][&a%player_name%&7]&e+%additional_owner_count%&r '
+
+    # Whether Hoppers or Hopper Minecarts may collect items still within their ownership protection period.
+    allow-hopper-pickup: false
+
+    # How to handle a virtual carrier when a Creative inventory has no empty slot and no matching stack has capacity:
+    # destroy matches vanilla by consuming the ground item; deny keeps the item on the ground.
+    creative-no-capacity-pickup: destroy
+
+    # Minimum seconds between pickup-denied notices for one player; 0 shows every notice.
+    pickup-warning-cooldown-seconds: 5
+
+    # Pickup-denied notice location: action-bar or chat.
+    pickup-warning-message-type: action-bar
+
+  display-name-format:
+    # Built-in placeholders:
+    # %item_display_name%, %amount%, %owner%, %owner_count%, %other_owner_count%,
+    # %protection_remaining%, %lifetime_elapsed%, %lifetime_remaining%.
+    # The three time placeholders use year-month-day hour:minute:second; a month is always 30 days and a year is 12 months.
+    # Leading zero units are omitted: 5 seconds is 5, 65 seconds is 1:05, and 1 day is 1 00:00:00.
+    # PlaceholderAPI placeholders such as %identifier_parameters% are also available when PlaceholderAPI is installed.
+    # Without PlaceholderAPI, external placeholders remain unchanged and the plugin still starts normally.
+    single: '&f%item_display_name% &7[&b%lifetime_elapsed%&7/&e%lifetime_remaining%&7]'
+
+    multi: '&f%item_display_name% &cx%amount% &7[&b%lifetime_elapsed%&7/&e%lifetime_remaining%&7]'

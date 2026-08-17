@@ -68,7 +68,7 @@ class DiagnosticReportServiceTest {
         assertTrue(warning.contains("timestamp=2026-07-30-08-02-59-UTC+08-00"))
         assertTrue(warning.contains("plugin.version=1.0.0-SNAPSHOT"))
         assertTrue(warning.contains("plugin.git-commit=220ff0458592ff4a6a911364b4001aac4ed7af68"))
-        assertTrue(warning.contains("plugin.git-commit-short=220ff045"))
+        assertTrue(warning.contains("plugin.git-commit-short=220ff04"))
         assertTrue(warning.contains("plugin.git-dirty=true"))
         assertTrue(warning.contains("merge.source.material=STONE"))
         assertTrue(warning.contains("merge.target.virtual-amount=missing"))
@@ -120,7 +120,7 @@ class DiagnosticReportServiceTest {
                 mapOf(
                     "plugin.version" to "1.0.0-SNAPSHOT",
                     "plugin.git-commit" to "220ff0458592ff4a6a911364b4001aac4ed7af68",
-                    "plugin.git-commit-short" to "220ff045",
+                    "plugin.git-commit-short" to "220ff04",
                     "plugin.git-dirty" to "true",
                 )
             },

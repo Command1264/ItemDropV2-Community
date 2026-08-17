@@ -6,6 +6,7 @@ import com.github.command1264.itemdropv2.platform.bukkit.BukkitMessageCatalogRel
 import com.github.command1264.itemdropv2.platform.bukkit.ConfigKeyMigrationReport
 import com.github.command1264.itemdropv2.platform.bukkit.LegacyConfigMigrationReport
 import com.github.command1264.itemdropv2.platform.bukkit.ManagementMessageKey
+import org.bukkit.configuration.file.YamlConfiguration
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertInstanceOf
@@ -24,6 +25,171 @@ class RuntimeConfigurationFactoryTest {
     lateinit var directory: Path
 
     @Test
+    fun `missing settings use Chinese templates for Taiwan and localize edition comments`() {
+        val loader =
+            OverrideResourcesClassLoader(
+                mapOf(
+                    PRO_FRAGMENT_RESOURCE to CHINESE_PRO_FRAGMENT.toByteArray(StandardCharsets.UTF_8),
+                    VIRTUAL_STACKING_FRAGMENT_RESOURCE to
+                        CHINESE_VIRTUAL_STACKING_FRAGMENT.toByteArray(StandardCharsets.UTF_8),
+                ),
+            )
+        val runtime =
+            RuntimeConfigurationFactory(
+                loader,
+                directory.toFile(),
+                paperClientSideTranslationSettingSupported = true,
+                virtualStackingSettingSupported = true,
+                configurationFragmentResources = listOf(PRO_FRAGMENT_RESOURCE, VIRTUAL_STACKING_FRAGMENT_RESOURCE),
+                countryCodeProvider = { "TW" },
+            ).create()
+
+        assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
+        val config = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
+        val lifetime = Files.readAllBytes(directory.resolve("item-lifetime.yml")).toString(StandardCharsets.UTF_8)
+
+        assertTrue(config.contains("language: zh_tw"))
+        assertTrue(config.contains("minecraft-language: zh_tw"))
+        assertTrue(config.contains("https://zh.minecraft.wiki/w/%E8%AF%AD%E8%A8%80"))
+        assertTrue(config.contains("Paper 1.16.5+ 是否讓 client"))
+        assertTrue(config.contains("Pro Virtual Stacking 設定。"))
+        assertTrue(lifetime.contains("# 預設壽命（秒）。"))
+    }
+
+    @Test
+    fun `missing settings use English templates outside Taiwan and China`() {
+        val loader =
+            OverrideResourcesClassLoader(
+                mapOf(
+                    ENGLISH_PRO_FRAGMENT_RESOURCE to ENGLISH_PRO_FRAGMENT.toByteArray(StandardCharsets.UTF_8),
+                    ENGLISH_VIRTUAL_STACKING_FRAGMENT_RESOURCE to
+                        ENGLISH_VIRTUAL_STACKING_FRAGMENT.toByteArray(StandardCharsets.UTF_8),
+                ),
+            )
+        val runtime =
+            RuntimeConfigurationFactory(
+                loader,
+                directory.toFile(),
+                paperClientSideTranslationSettingSupported = true,
+                virtualStackingSettingSupported = true,
+                configurationFragmentResources = listOf(PRO_FRAGMENT_RESOURCE, VIRTUAL_STACKING_FRAGMENT_RESOURCE),
+                countryCodeProvider = { "US" },
+            ).create()
+
+        assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
+        val config = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
+        val lifetime = Files.readAllBytes(directory.resolve("item-lifetime.yml")).toString(StandardCharsets.UTF_8)
+
+        assertTrue(config.contains("language: en_us"))
+        assertTrue(config.contains("minecraft-language: en_us"))
+        assertTrue(config.contains("https://minecraft.wiki/w/Language"))
+        assertTrue(config.contains("Whether Paper 1.16.5+ lets each client"))
+        assertTrue(config.contains("Pro Virtual Stacking settings."))
+        assertTrue(lifetime.contains("# Default lifetime in seconds."))
+    }
+
+    @Test
+    fun `existing language chooses repair comment locale independent of current country`() {
+        val chinese =
+            embeddedConfigBytes()
+                .toString(StandardCharsets.UTF_8)
+                .replace("  language: zh_tw\n", "  language: ZH_TW\n")
+        val original = chinese.toByteArray(StandardCharsets.UTF_8)
+        Files.write(directory.resolve("config.yml"), original)
+        val runtime =
+            RuntimeConfigurationFactory(
+                javaClass.classLoader,
+                directory.toFile(),
+                countryCodeProvider = { "US" },
+            ).create()
+
+        assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
+        val repaired = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
+
+        assertTrue(repaired.contains("language: ZH_TW"))
+        assertTrue(repaired.contains("# 是否啟用掉落物名稱顯示。"))
+        assertArrayEquals(original, Files.readAllBytes(directory.resolve("config.yml")))
+    }
+
+    @Test
+    fun `existing uppercase Chinese language repairs missing keys with Chinese comments on a US host`() {
+        val candidate =
+            embeddedConfigBytes()
+                .toString(StandardCharsets.UTF_8)
+                .replace("  language: zh_tw\n", "  language: ZH_TW\n")
+                .replace(CHINESE_PROCESSING_SECTION, "")
+        Files.write(directory.resolve("config.yml"), candidate.toByteArray(StandardCharsets.UTF_8))
+        val runtime =
+            RuntimeConfigurationFactory(
+                javaClass.classLoader,
+                directory.toFile(),
+                countryCodeProvider = { "US" },
+            ).create()
+
+        assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
+        val repaired = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
+
+        assertTrue(repaired.contains("  language: ZH_TW\n"))
+        assertTrue(repaired.contains("# 每個 server tick 優先容納在精確 20-tick 相位的 Item 數量。"))
+        assertTrue(repaired.contains("maximum-items-per-tick: 256"))
+    }
+
+    @Test
+    fun `existing English language chooses English comments when repairing on a Taiwan host`() {
+        val english =
+            requireNotNull(javaClass.classLoader.getResourceAsStream(ENGLISH_CONFIG_RESOURCE))
+                .use(InputStream::readBytes)
+                .toString(StandardCharsets.UTF_8)
+                .replace(
+                    "  processing:\n" +
+                        "    # Preferred number of Items assigned to exact 20-tick phases per server tick.\n" +
+                        "    # Excess registrations are distributed to the least-loaded slot whose wait remains closest to 20 ticks.\n" +
+                        "    maximum-items-per-tick: 256\n\n",
+                    "",
+                )
+        Files.write(directory.resolve("config.yml"), english.toByteArray(StandardCharsets.UTF_8))
+        val runtime =
+            RuntimeConfigurationFactory(
+                javaClass.classLoader,
+                directory.toFile(),
+                countryCodeProvider = { "TW" },
+            ).create()
+
+        assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
+        val repaired = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
+
+        assertTrue(repaired.contains("# Preferred number of Items assigned to exact 20-tick phases per server tick."))
+        assertTrue(repaired.contains("maximum-items-per-tick: 256"))
+        assertEquals(
+            "en_us",
+            runtime.settingsManager
+                .settings()
+                .messageLanguage.code,
+        )
+    }
+
+    @Test
+    fun `localized templates keep identical YAML structure and non-locale values`() {
+        val chineseConfig = loadResourceYaml(CONFIG_RESOURCE)
+        val englishConfig = loadResourceYaml(ENGLISH_CONFIG_RESOURCE)
+        val chineseLifetime = loadResourceYaml(LIFETIME_RESOURCE)
+        val englishLifetime = loadResourceYaml(ENGLISH_LIFETIME_RESOURCE)
+
+        assertEquals(chineseConfig.getKeys(true).toList(), englishConfig.getKeys(true).toList())
+        chineseConfig.getKeys(true).filterNot(chineseConfig::isConfigurationSection).forEach { path ->
+            if (path !in setOf("general.language", "general.minecraft-language")) {
+                assertEquals(chineseConfig.get(path), englishConfig.get(path), path)
+            }
+        }
+        assertEquals(chineseLifetime.getKeys(true).toList(), englishLifetime.getKeys(true).toList())
+        chineseLifetime.getKeys(true).filterNot(chineseLifetime::isConfigurationSection).forEach { path ->
+            assertEquals(chineseLifetime.get(path), englishLifetime.get(path), path)
+        }
+        assertEquals(resourceCommentCount(CONFIG_RESOURCE), resourceCommentCount(ENGLISH_CONFIG_RESOURCE))
+        assertEquals(resourceCommentCount(LIFETIME_RESOURCE), resourceCommentCount(ENGLISH_LIFETIME_RESOURCE))
+    }
+
+    @Test
     fun `Pro defaults create client translation switch with comments`() {
         val fragmentPath = "config/test-pro-translation.yml.fragment"
         val fragment =
@@ -36,7 +202,8 @@ class RuntimeConfigurationFactoryTest {
                 loader,
                 directory.toFile(),
                 paperClientSideTranslationSettingSupported = true,
-                configurationFragmentResource = fragmentPath,
+                configurationFragmentResources = listOf(fragmentPath),
+                countryCodeProvider = { "TW" },
             ).create()
 
         val applied = assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
@@ -57,7 +224,8 @@ class RuntimeConfigurationFactoryTest {
                 loader,
                 directory.toFile(),
                 paperClientSideTranslationSettingSupported = true,
-                configurationFragmentResource = fragmentPath,
+                configurationFragmentResources = listOf(fragmentPath),
+                countryCodeProvider = { "TW" },
             ).create()
         assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
         val invalid =
@@ -86,7 +254,8 @@ class RuntimeConfigurationFactoryTest {
                     loader,
                     directory.toFile(),
                     paperClientSideTranslationSettingSupported = true,
-                    configurationFragmentResource = fragmentPath,
+                    configurationFragmentResources = listOf(fragmentPath),
+                    countryCodeProvider = { "TW" },
                 ).create()
             }
 
@@ -107,7 +276,12 @@ class RuntimeConfigurationFactoryTest {
                         "    paper-client-side-translation: retained-value$newline$newline",
                 ).toByteArray(StandardCharsets.UTF_8)
         Files.write(directory.resolve("config.yml"), original)
-        val runtime = RuntimeConfigurationFactory(javaClass.classLoader, directory.toFile()).create()
+        val runtime =
+            RuntimeConfigurationFactory(
+                javaClass.classLoader,
+                directory.toFile(),
+                countryCodeProvider = { "TW" },
+            ).create()
 
         val applied = assertInstanceOf(ItemDisplaySettingsUpdateResult.Applied::class.java, runtime.settingsManager.reload())
         val persisted = Files.readAllBytes(directory.resolve("config.yml"))
@@ -132,7 +306,12 @@ class RuntimeConfigurationFactoryTest {
 
     @Test
     fun `reload restores missing ownership strategy with its embedded comments`() {
-        val runtime = RuntimeConfigurationFactory(javaClass.classLoader, directory.toFile()).create()
+        val runtime =
+            RuntimeConfigurationFactory(
+                javaClass.classLoader,
+                directory.toFile(),
+                countryCodeProvider = { "TW" },
+            ).create()
         val embedded = embeddedConfigBytes().toString(StandardCharsets.UTF_8)
         val ownershipStrategySpan =
             "\n    # 合併擁有權保護剩餘秒數：average（平均）、maximum（取較久）、minimum（取較短）或\n" +
@@ -162,7 +341,11 @@ class RuntimeConfigurationFactoryTest {
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
-                RuntimeConfigurationFactory(loader, directory.toFile()).create()
+                RuntimeConfigurationFactory(
+                    loader,
+                    directory.toFile(),
+                    countryCodeProvider = { "TW" },
+                ).create()
             }
 
         assertEquals("embedded config/config.yml is missing", error.message)
@@ -175,7 +358,11 @@ class RuntimeConfigurationFactoryTest {
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
-                RuntimeConfigurationFactory(loader, directory.toFile()).create()
+                RuntimeConfigurationFactory(
+                    loader,
+                    directory.toFile(),
+                    countryCodeProvider = { "TW" },
+                ).create()
             }
 
         assertEquals("embedded config/config.yml is not strict UTF-8", error.message)
@@ -188,7 +375,11 @@ class RuntimeConfigurationFactoryTest {
 
         val error =
             assertThrows(IllegalArgumentException::class.java) {
-                RuntimeConfigurationFactory(loader, directory.toFile()).create()
+                RuntimeConfigurationFactory(
+                    loader,
+                    directory.toFile(),
+                    countryCodeProvider = { "TW" },
+                ).create()
             }
 
         assertEquals("embedded config/config.yml is invalid YAML", error.message)
@@ -201,7 +392,11 @@ class RuntimeConfigurationFactoryTest {
         val loader = OverrideResourceClassLoader(CONFIG_RESOURCE, mixedNewlines.toByteArray(StandardCharsets.UTF_8))
 
         assertThrows(IllegalArgumentException::class.java) {
-            RuntimeConfigurationFactory(loader, directory.toFile()).create()
+            RuntimeConfigurationFactory(
+                loader,
+                directory.toFile(),
+                countryCodeProvider = { "TW" },
+            ).create()
         }
 
         assertEquals(1, loader.readCount)
@@ -218,7 +413,11 @@ class RuntimeConfigurationFactoryTest {
 
         val error =
             assertThrows(IllegalStateException::class.java) {
-                RuntimeConfigurationFactory(loader, directory.toFile()).create()
+                RuntimeConfigurationFactory(
+                    loader,
+                    directory.toFile(),
+                    countryCodeProvider = { "TW" },
+                ).create()
             }
 
         assertEquals(true, error.message.orEmpty().contains("schema-version"))
@@ -236,6 +435,7 @@ class RuntimeConfigurationFactoryTest {
                     reloads += 1
                     store.reload(language)
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         val original = writeRepairCandidate("ja_jp")
         runtime.settingsManager.installTransitionValidator { _, _ -> "transition rejected" }
@@ -261,6 +461,7 @@ class RuntimeConfigurationFactoryTest {
                     reloads += 1
                     store.reload(language)
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         val original = writeRepairCandidate("ja_jp")
 
@@ -287,6 +488,7 @@ class RuntimeConfigurationFactoryTest {
                     reloads += 1
                     store.reload(language)
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         writeRepairCandidate("ja_jp")
 
@@ -309,13 +511,14 @@ class RuntimeConfigurationFactoryTest {
                 messageCatalogReloader = { store, language ->
                     val persisted = Files.readAllBytes(directory.resolve("config.yml")).toString(StandardCharsets.UTF_8)
                     commitObservedPersistedCandidate =
-                        persisted.contains("language: ja_jp") && persisted.contains("minecraft-language: en_us")
+                        persisted.contains("language: ja_jp") && persisted.contains("minecraft-language: zh_tw")
                     if (language.code == "ja_jp") {
                         BukkitMessageCatalogReloadResult.Failed("injected catalog reload failure")
                     } else {
                         store.reload(language)
                     }
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         val original = writeRepairCandidate("ja_jp")
 
@@ -344,6 +547,7 @@ class RuntimeConfigurationFactoryTest {
                         store.reload(language)
                     }
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         val original = writeCurrentKeyMigrationCandidate()
 
@@ -374,6 +578,7 @@ class RuntimeConfigurationFactoryTest {
                         store.reload(language)
                     }
                 },
+                countryCodeProvider = { "TW" },
             ).create()
         val original =
             """
@@ -405,6 +610,7 @@ class RuntimeConfigurationFactoryTest {
                 javaClass.classLoader,
                 directory.toFile(),
                 configKeyMigrationReporter = { throw IllegalStateException("injected reporter failure") },
+                countryCodeProvider = { "TW" },
             ).create()
         val original = writeCurrentKeyMigrationCandidate()
 
@@ -423,8 +629,8 @@ class RuntimeConfigurationFactoryTest {
         val candidate =
             embeddedConfigBytes()
                 .toString(StandardCharsets.UTF_8)
-                .replace("language: zh_tw", "language: $language")
-                .replace("  minecraft-language: en_us\n", "")
+                .replace("  language: zh_tw\n", "  language: $language\n")
+                .replace("  minecraft-language: zh_tw\n", "")
                 .toByteArray(StandardCharsets.UTF_8)
         Files.write(directory.resolve("config.yml"), candidate)
         return candidate
@@ -434,7 +640,7 @@ class RuntimeConfigurationFactoryTest {
         val candidate =
             embeddedConfigBytes()
                 .toString(StandardCharsets.UTF_8)
-                .replace("language: zh_tw", "language: ja_jp")
+                .replace("  language: zh_tw\n", "  language: ja_jp\n")
                 .replace("creative-no-capacity-pickup: destroy", "creative-full-inventory-pickup: deny")
                 .toByteArray(StandardCharsets.UTF_8)
         Files.write(directory.resolve("config.yml"), candidate)
@@ -475,6 +681,19 @@ class RuntimeConfigurationFactoryTest {
         requireNotNull(javaClass.classLoader.getResourceAsStream(CONFIG_RESOURCE))
             .use(InputStream::readBytes)
 
+    private fun loadResourceYaml(path: String): YamlConfiguration =
+        YamlConfiguration().apply {
+            val raw = requireNotNull(javaClass.classLoader.getResourceAsStream(path)).use(InputStream::readBytes)
+            loadFromString(raw.toString(StandardCharsets.UTF_8))
+        }
+
+    private fun resourceCommentCount(path: String): Int =
+        requireNotNull(javaClass.classLoader.getResourceAsStream(path))
+            .use(InputStream::readBytes)
+            .toString(StandardCharsets.UTF_8)
+            .lineSequence()
+            .count { it.trimStart().startsWith("#") }
+
     private class OverrideResourceClassLoader(
         private val overriddenPath: String,
         bytes: ByteArray?,
@@ -490,7 +709,60 @@ class RuntimeConfigurationFactoryTest {
         }
     }
 
+    private class OverrideResourcesClassLoader(
+        resources: Map<String, ByteArray>,
+    ) : ClassLoader(RuntimeConfigurationFactoryTest::class.java.classLoader) {
+        private val resources = resources.mapValues { (_, bytes) -> bytes.copyOf() }
+
+        override fun getResourceAsStream(name: String): InputStream? =
+            resources[name]?.let(::ByteArrayInputStream) ?: super.getResourceAsStream(name)
+    }
+
     private companion object {
         const val CONFIG_RESOURCE = "config/config.yml"
+        const val ENGLISH_CONFIG_RESOURCE = "config/config.en_us.yml"
+        const val LIFETIME_RESOURCE = "config/item-lifetime.yml"
+        const val ENGLISH_LIFETIME_RESOURCE = "config/item-lifetime.en_us.yml"
+        const val PRO_FRAGMENT_RESOURCE = "config/pro-paper-client-side-translation.yml.fragment"
+        const val ENGLISH_PRO_FRAGMENT_RESOURCE = "config/pro-paper-client-side-translation.en_us.yml.fragment"
+        const val VIRTUAL_STACKING_FRAGMENT_RESOURCE = "config/pro-virtual-stacking.yml.fragment"
+        const val ENGLISH_VIRTUAL_STACKING_FRAGMENT_RESOURCE = "config/pro-virtual-stacking.en_us.yml.fragment"
+        const val CHINESE_PROCESSING_SECTION =
+            "  processing:\n" +
+                "    # 每個 server tick 優先容納在精確 20-tick 相位的 Item 數量。\n" +
+                "    # 同 tick 註冊量超過此值時，超額 Item 會分散到負載較低且等待時間最接近 20 ticks 的槽。\n" +
+                "    maximum-items-per-tick: 256\n\n"
+        const val CHINESE_PRO_FRAGMENT =
+            "  display:\n" +
+                "    # Paper 1.16.5+ 是否讓 client 依自己的語系翻譯原版物品名稱。\n" +
+                "    paper-client-side-translation: true\n"
+        const val ENGLISH_PRO_FRAGMENT =
+            "  display:\n" +
+                "    # Whether Paper 1.16.5+ lets each client translate vanilla item names.\n" +
+                "    paper-client-side-translation: true\n"
+        const val CHINESE_VIRTUAL_STACKING_FRAGMENT =
+            "  virtual-stacking:\n" +
+                "    # Pro Virtual Stacking 設定。\n" +
+                "    enabled: false\n" +
+                "    carrier-amount-mode: proportional\n" +
+                "    maximum-native-stacks-per-entity: 128\n" +
+                "    unstackable-items:\n" +
+                "      enabled: false\n" +
+                "    merge:\n" +
+                "      comparisons-per-tick: 256\n" +
+                "      events-per-tick: 64\n" +
+                "      retry-backoff-seconds: 5\n"
+        const val ENGLISH_VIRTUAL_STACKING_FRAGMENT =
+            "  virtual-stacking:\n" +
+                "    # Pro Virtual Stacking settings.\n" +
+                "    enabled: false\n" +
+                "    carrier-amount-mode: proportional\n" +
+                "    maximum-native-stacks-per-entity: 128\n" +
+                "    unstackable-items:\n" +
+                "      enabled: false\n" +
+                "    merge:\n" +
+                "      comparisons-per-tick: 256\n" +
+                "      events-per-tick: 64\n" +
+                "      retry-backoff-seconds: 5\n"
     }
 }

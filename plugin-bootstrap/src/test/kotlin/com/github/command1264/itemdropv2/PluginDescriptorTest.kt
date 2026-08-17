@@ -16,7 +16,7 @@ class PluginDescriptorTest {
         val descriptor = stream.use { YamlConfiguration.loadConfiguration(InputStreamReader(it, Charsets.UTF_8)) }
 
         assertEquals(
-            listOf("idrop", "drop", "itemdrops", "idrops", "drops"),
+            listOf("idrop", "drop"),
             descriptor.getStringList("commands.itemdrop.aliases"),
         )
         assertEquals(true, descriptor.getBoolean("permissions.itemdrop.commands.basic.default"))
@@ -35,9 +35,9 @@ class PluginDescriptorTest {
         val shortCommit = requireNotNull(descriptor.getString("build.git-commit"))
         val dirty = requireNotNull(descriptor.getString("build.git-dirty"))
 
-        assertEquals("1.0.0-SNAPSHOT", descriptor.getString("version"))
+        assertEquals("1.0.0", descriptor.getString("version"))
         assertEquals(false, descriptor.contains("build.git-commit-full"))
-        assertTrue(shortCommit == "unknown" || shortCommit.matches(Regex("[0-9a-f]{8}")))
+        assertTrue(shortCommit == "unknown" || shortCommit.matches(Regex("[0-9a-f]{7}")))
         assertTrue(dirty in setOf("true", "false", "unknown"))
     }
 
@@ -66,7 +66,9 @@ class PluginDescriptorTest {
     fun `packages configuration resources below the config directory`() {
         listOf(
             "config/config.yml",
+            "config/config.en_us.yml",
             "config/item-lifetime.yml",
+            "config/item-lifetime.en_us.yml",
             "config/languages/zh_tw.yml",
             "config/languages/en_us.yml",
         ).forEach { path ->

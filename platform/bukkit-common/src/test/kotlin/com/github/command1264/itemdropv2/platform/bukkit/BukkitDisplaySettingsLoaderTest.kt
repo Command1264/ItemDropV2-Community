@@ -116,6 +116,23 @@ class BukkitDisplaySettingsLoaderTest {
     }
 
     @Test
+    fun `normalizes plugin and Minecraft language codes without case sensitivity`() {
+        val configured =
+            validConfig()
+                .replace("language: en_us", "language: EN_US")
+                .replace("minecraft-language: zh_tw", "minecraft-language: ZH_TW")
+
+        val loaded =
+            assertInstanceOf(
+                BukkitDisplaySettingsLoadResult.Loaded::class.java,
+                BukkitDisplaySettingsLoader().load(yaml(configured)),
+            )
+
+        assertEquals("en_us", loaded.settings.messageLanguage.code)
+        assertEquals("zh_tw", loaded.settings.minecraftLanguage.value)
+    }
+
+    @Test
     fun `loads processing budget and rejects non-positive values`() {
         val configured =
             validConfig().replace(

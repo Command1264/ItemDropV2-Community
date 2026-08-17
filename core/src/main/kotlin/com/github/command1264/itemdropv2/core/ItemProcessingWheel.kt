@@ -26,6 +26,8 @@ public class ItemProcessingWheel(
         assignments.remove(entityId)?.let { slot -> slots[slot].remove(entityId) }
     }
 
+    public fun isRegistered(entityId: UUID): Boolean = entityId in assignments
+
     public fun advance(): List<UUID> {
         val due = slots[nextSlotToProcess].toList()
         nextSlotToProcess = (nextSlotToProcess + 1) % SLOT_COUNT

@@ -71,12 +71,15 @@ class BukkitMessageCatalogStoreTest {
         assertInstanceOf(BukkitMessageCatalogReloadResult.Applied::class.java, store.reload(language))
         val file = directory.resolve("en_us.yml").toFile()
         YamlConfiguration.loadConfiguration(file).apply {
-            set(ManagementMessageKey.INFO.path, 42)
+            set(ManagementMessageKey.INFO_HEADER.path, 42)
             save(file)
         }
 
         assertEquals(BukkitMessageCatalogReloadResult.Applied, store.reload(language))
-        assertEquals("§fen_us:${ManagementMessageKey.INFO.path}", store.render(language, ManagementMessageKey.INFO.path))
+        assertEquals(
+            "§fen_us:${ManagementMessageKey.INFO_HEADER.path}",
+            store.render(language, ManagementMessageKey.INFO_HEADER.path),
+        )
         assertEquals(1, Files.list(directory).use { files -> files.filter { it.fileName.toString().contains("parse-recovery") }.count() })
     }
 
@@ -153,18 +156,18 @@ class BukkitMessageCatalogStoreTest {
                 .readText()
                 .replace("  no-permission:", "  translator-note: keep\n  no-permission:")
                 .replace(Regex("(?m)^  no-permission:.*(?:\\R)?"), "")
-                .replace(Regex("(?m)^  info:.*$"), "  info: 42 # invalid but explained")
+                .replace(Regex("(?m)^  info-header:.*$"), "  info-header: 42 # invalid but explained")
         file.writeText(original)
 
         assertEquals(BukkitMessageCatalogReloadResult.Applied, store.reload(language))
 
         val repaired = file.readText()
         assertTrue(repaired.contains("# permission comment\n  no-permission:"))
-        assertTrue(repaired.contains("info: '&fen_us:command.info' # invalid but explained"))
+        assertTrue(repaired.contains("info-header: '&fen_us:command.info-header' # invalid but explained"))
         assertTrue(repaired.contains("translator-note: keep"))
         assertEquals(1, Files.list(directory).use { files -> files.filter { it.fileName.toString().contains("parse-recovery") }.count() })
         assertTrue(directory.resolve("en_us.yml.parse-recovery-2026-08-11-18-30-45-UTC+08-00.bak").toFile().isFile)
-        assertEquals(listOf("command.info"), store.consumeRecoveryReports().single().repairedPaths)
+        assertEquals(listOf("command.info-header"), store.consumeRecoveryReports().single().repairedPaths)
     }
 
     @Test
@@ -184,7 +187,10 @@ class BukkitMessageCatalogStoreTest {
         val setup = storeWithRawDefaults()
         assertEquals(BukkitMessageCatalogReloadResult.Applied, setup.reload(PluginMessageLanguage.EN_US))
         val file = directory.resolve("en_us.yml").toFile()
-        val invalid = file.readText().replace(Regex("(?m)^  info:.*$"), "  info: 42 # retain on rollback")
+        val invalid =
+            file
+                .readText()
+                .replace(Regex("(?m)^  info-header:.*$"), "  info-header: 42 # retain on rollback")
         file.writeText(invalid)
         val store = storeWithRawDefaults { throw IllegalStateException("injected reporter failure") }
 
@@ -200,7 +206,7 @@ class BukkitMessageCatalogStoreTest {
         val setup = storeWithRawDefaults()
         assertEquals(BukkitMessageCatalogReloadResult.Applied, setup.reload(PluginMessageLanguage.EN_US))
         val file = directory.resolve("en_us.yml").toFile()
-        file.writeText(file.readText().replace(Regex("(?m)^  info:.*$"), "  info: 42"))
+        file.writeText(file.readText().replace(Regex("(?m)^  info-header:.*$"), "  info-header: 42"))
         val external = "external: edit\n".toByteArray()
         val store =
             storeWithRawDefaults {

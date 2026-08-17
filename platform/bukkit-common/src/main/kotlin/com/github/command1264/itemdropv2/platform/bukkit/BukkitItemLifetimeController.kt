@@ -30,10 +30,13 @@ public class BukkitItemLifetimeController(
     private val transientTargetLeaseFactory: TransientItemTargetLeaseFactory =
         TransientItemTargetLeaseFactory { TransientItemTargetLease {} },
     private val loadedChunkCheck: (Item) -> Boolean = ::isItemChunkLoaded,
+    private val loadedItemReadiness: (Item) -> Boolean = { true },
 ) : Listener,
     AutoCloseable {
     private val pendingRegistrations = mutableMapOf<UUID, PendingLifetimeRegistration>()
     private val pendingCarrierNormalizations = mutableMapOf<UUID, Item>()
+    private val consecutiveAvailabilityMisses = mutableMapOf<UUID, Int>()
+    private val registeredItems = mutableMapOf<UUID, Item>()
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     @Suppress("TooGenericExceptionCaught")
@@ -72,10 +75,14 @@ public class BukkitItemLifetimeController(
 
     @EventHandler(priority = EventPriority.MONITOR)
     public fun onChunkLoad(event: ChunkLoadEvent) {
-        event.chunk.entities
-            .filterIsInstance<Item>()
-            .forEach(::register)
-        scheduleLoadedChunkRetry(event.chunk, LOADED_CHUNK_ENTITY_VISIBILITY_ATTEMPTS)
+        val visibleItems = event.chunk.entities.filterIsInstance<Item>()
+        visibleItems.forEach(::register)
+        scheduleLoadedChunkRetry(
+            event.chunk,
+            LOADED_CHUNK_ENTITY_VISIBILITY_ATTEMPTS,
+            visibleItems.mapTo(mutableSetOf(), Item::getUniqueId),
+            requireRecoveryReadiness = false,
+        )
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
@@ -84,7 +91,7 @@ public class BukkitItemLifetimeController(
             .filterIsInstance<Item>()
             .forEach {
                 pendingCarrierNormalizations.remove(it.uniqueId)
-                wheel.forget(it.uniqueId)
+                forget(it.uniqueId)
             }
     }
 
@@ -92,10 +99,26 @@ public class BukkitItemLifetimeController(
         server.worlds
             .asSequence()
             .flatMap { it.loadedChunks.asSequence() }
-            .flatMap { it.entities.asSequence() }
-            .filterIsInstance<Item>()
-            .forEach(::register)
+            .forEach { chunk ->
+                val visibleItems = chunk.entities.filterIsInstance<Item>()
+                visibleItems.filter(::isLoadedItemReady).forEach(::register)
+                scheduleLoadedChunkRetry(
+                    chunk,
+                    LOADED_CHUNK_ENTITY_VISIBILITY_ATTEMPTS,
+                    visibleItems.mapTo(mutableSetOf(), Item::getUniqueId),
+                    requireRecoveryReadiness = true,
+                )
+            }
     }
+
+    @Suppress("TooGenericExceptionCaught")
+    private fun isLoadedItemReady(item: Item): Boolean =
+        try {
+            loadedItemReadiness(item)
+        } catch (error: RuntimeException) {
+            warningSink.warn("loaded item recovery readiness failed (${error.javaClass.simpleName})")
+            false
+        }
 
     /** Called once per server tick; only one of the twenty fixed slots is processed. */
     public fun processNextSlot() {
@@ -104,15 +127,7 @@ public class BukkitItemLifetimeController(
 
     @Suppress("TooGenericExceptionCaught")
     private fun processSecond(entityId: UUID) {
-        val item = resolveServerItem(server, entityId)
-        if (item == null) {
-            wheel.forget(entityId)
-            return
-        }
-        if (!isProcessable(item)) {
-            wheel.forget(entityId)
-            return
-        }
+        val item = resolveProcessableItem(entityId) ?: return
         try {
             withTransientTarget(item) {
                 when (val outcome = service.processSecond(entityId)) {
@@ -123,14 +138,14 @@ public class BukkitItemLifetimeController(
                     -> ownershipRefresh.refresh(item)
                     ItemLifetimeProcessingOutcome.ItemExpired -> {
                         item.remove()
-                        wheel.forget(entityId)
+                        forget(entityId)
                     }
                     is ItemLifetimeProcessingOutcome.Rejected -> {
-                        wheel.forget(entityId)
+                        forget(entityId)
                         warningSink.warn("item lifetime processing rejected (${outcome.reason})")
                     }
                     is ItemLifetimeProcessingOutcome.Failed -> {
-                        wheel.forget(entityId)
+                        forget(entityId)
                         warningSink.warn("item lifetime processing failed (${outcome.errorType})")
                     }
                 }
@@ -140,8 +155,40 @@ public class BukkitItemLifetimeController(
         }
     }
 
+    private fun resolveProcessableItem(entityId: UUID): Item? {
+        val registered = registeredItems[entityId]
+        val item =
+            if (registered != null && !registered.isDead && !registered.isValid) {
+                resolveServerItem(server, entityId)?.also { registeredItems[entityId] = it } ?: registered
+            } else {
+                registered ?: resolveServerItem(server, entityId)
+            }
+        return when {
+            item == null -> {
+                retainForTransientAvailabilityMiss(entityId)
+                null
+            }
+            item.isDead -> {
+                forget(entityId)
+                null
+            }
+            !item.isValid -> {
+                retainForTransientAvailabilityMiss(entityId)
+                null
+            }
+            !isProcessable(item) -> {
+                forget(entityId)
+                null
+            }
+            else -> {
+                consecutiveAvailabilityMisses.remove(entityId)
+                item
+            }
+        }
+    }
+
     private fun isProcessable(item: Item): Boolean {
-        if (!isAvailable(item) || !loadedChunkCheck(item)) return false
+        if (!loadedChunkCheck(item)) return false
         val stack = item.itemStack
         return stack.type != Material.AIR && stack.amount > 0
     }
@@ -162,6 +209,7 @@ public class BukkitItemLifetimeController(
             }
         when (outcome) {
             is ItemLifetimeRegistrationOutcome.Registered -> {
+                registeredItems[entityId] = pending.item
                 wheel.register(entityId)
                 val normalizationOutcome =
                     try {
@@ -184,7 +232,7 @@ public class BukkitItemLifetimeController(
                     pending.item.takeIf(::isAvailable)?.remove()
                 } finally {
                     finishRegistration(entityId)
-                    wheel.forget(entityId)
+                    forget(entityId)
                 }
             }
             is ItemLifetimeRegistrationOutcome.Rejected -> {
@@ -267,14 +315,26 @@ public class BukkitItemLifetimeController(
     private fun scheduleLoadedChunkRetry(
         chunk: org.bukkit.Chunk,
         attemptsRemaining: Int,
+        observedEntityIds: MutableSet<UUID>,
+        requireRecoveryReadiness: Boolean,
     ) {
         try {
             taskExecutor.execute {
                 if (chunk.isLoaded) {
-                    val items = chunk.entities.filterIsInstance<Item>()
-                    items.forEach(::register)
-                    if (items.isEmpty() && attemptsRemaining > 1) {
-                        scheduleLoadedChunkRetry(chunk, attemptsRemaining - 1)
+                    chunk.entities
+                        .filterIsInstance<Item>()
+                        .filter { item ->
+                            observedEntityIds.add(item.uniqueId) || !wheel.isRegistered(item.uniqueId)
+                        }.filter { item ->
+                            !requireRecoveryReadiness || isLoadedItemReady(item)
+                        }.forEach(::register)
+                    if (attemptsRemaining > 1) {
+                        scheduleLoadedChunkRetry(
+                            chunk,
+                            attemptsRemaining - 1,
+                            observedEntityIds,
+                            requireRecoveryReadiness,
+                        )
                     }
                 }
             }
@@ -305,7 +365,24 @@ public class BukkitItemLifetimeController(
         pendingRegistrations.values.forEach { it.lease.release() }
         pendingRegistrations.clear()
         pendingCarrierNormalizations.clear()
+        consecutiveAvailabilityMisses.clear()
+        registeredItems.clear()
         wheel.clear()
+    }
+
+    private fun retainForTransientAvailabilityMiss(entityId: UUID) {
+        val misses = consecutiveAvailabilityMisses.getOrDefault(entityId, 0) + 1
+        if (misses >= AVAILABILITY_MISS_ATTEMPTS) {
+            forget(entityId)
+        } else {
+            consecutiveAvailabilityMisses[entityId] = misses
+        }
+    }
+
+    private fun forget(entityId: UUID) {
+        consecutiveAvailabilityMisses.remove(entityId)
+        registeredItems.remove(entityId)
+        wheel.forget(entityId)
     }
 
     @Suppress("TooGenericExceptionCaught")
@@ -376,6 +453,11 @@ public class BukkitItemLifetimeController(
     private companion object {
         private const val MISSING_TARGET = "MissingTarget"
         private const val STATE_NOT_READY = "StateNotReady"
+
+        // Modern Spigot can delay UUID/chunk entity visibility for several seconds after a burst spawn.
+        // Explicit unload, despawn, dead and empty signals still forget immediately; only an ambiguous
+        // resolver miss or temporarily invalid canonical wrapper receives this bounded grace window.
+        private const val AVAILABILITY_MISS_ATTEMPTS = 20
         private const val REGISTRATION_ATTEMPTS = 20
         private const val CARRIER_NORMALIZATION_ATTEMPTS = 20
         private const val LOADED_CHUNK_ENTITY_VISIBILITY_ATTEMPTS = 100

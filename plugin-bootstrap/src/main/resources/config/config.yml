@@ -5,12 +5,13 @@ general:
   # 是否啟用掉落物名稱顯示。可用 /itemdrop toggle [on|off] 即時切換。
   enabled: true
 
-  # 插件指令、提示與顯示文字語系，例如 zh_tw、en_us、ja_jp。
-  # 語言檔位於 plugins/ItemDropV2/languages/；缺少自訂語系時會建立英文範本。
+  # 插件指令、提示與顯示文字語系。內建選項為 zh_tw、en_us，也可使用自訂語言檔。
+  # 語言代碼不分大小寫；語言檔位於 plugins/ItemDropV2/languages/，缺少自訂語系時會建立英文範本。
   language: zh_tw
 
-  # 掉落物使用的 Minecraft 官方語系代碼，例如 en_us、zh_tw。未設定時相容性預設為 en_us。
-  minecraft-language: en_us
+  # 掉落物使用的 Minecraft 官方語言 ID，不分大小寫；可用 ID 依 server 的 Minecraft 版本而異。
+  # 例如 zh_tw、en_us；語言 ID 清單：https://zh.minecraft.wiki/w/%E8%AF%AD%E8%A8%80
+  minecraft-language: zh_tw
 
   # 下列世界不修改掉落物。世界名稱會精確比對並拒絕空白、重複或控制字元。
   blocked-worlds:
@@ -22,34 +23,6 @@ items:
     # 每個 server tick 優先容納在精確 20-tick 相位的 Item 數量。
     # 同 tick 註冊量超過此值時，超額 Item 會分散到負載較低且等待時間最接近 20 ticks 的槽。
     maximum-items-per-tick: 256
-
-  virtual-stacking:
-    # 實驗性超量堆疊；完整 server matrix 驗證完成前預設關閉。
-    enabled: false
-
-    # Entity ItemStack 的 Count 呈現方式；PDC virtual amount 始終是真實數量。
-    # proportional：依虛擬上限比例映射到 1..64（預設）。
-    # count-capped：1..64 使用實際數量，超過 64 固定為 64。
-    # minimal：保留舊行為，通常為 1，達虛擬上限時才使用原生滿堆疊 sentinel。
-    carrier-amount-mode: proportional
-
-    # 單一 Item Entity 最多代表幾組原生堆疊；實際上限會乘上該物品的原生 stack size。
-    # 例如 128 組代表一般物品 8192 個、16 上限物品 2048 個、不可堆疊物品 128 個。
-    maximum-native-stacks-per-entity: 128
-
-    unstackable-items:
-      # 是否允許 metadata 完全相同的原生不可堆疊物品進行虛擬合併。
-      # 玩家拾取時仍逐格放入，漏斗／漏斗礦車每次只搬運一個。
-      enabled: false
-
-    merge:
-      # 每 tick 最多比較的候選 pair，以及最多派送的 ItemMergeEvent。
-      comparisons-per-tick: 256
-
-      events-per-tick: 64
-
-      # 其他插件取消主動派送的 ItemMergeEvent 後，同一 pair 暫停重試的秒數。
-      retry-backoff-seconds: 5
 
   rarity-display:
     # 是否依照目前 Minecraft 版本的原生物品 rarity 顯示名稱顏色。

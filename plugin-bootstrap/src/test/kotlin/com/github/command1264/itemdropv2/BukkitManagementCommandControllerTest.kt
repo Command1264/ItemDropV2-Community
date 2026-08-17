@@ -13,12 +13,14 @@ import com.github.command1264.itemdropv2.platform.bukkit.BukkitManagementMessage
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitMessageCatalogReloadResult
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitMessageCatalogStore
 import com.github.command1264.itemdropv2.platform.bukkit.ConfigParseRecoveryReport
+import com.github.command1264.itemdropv2.platform.bukkit.ManagementCommandInfo
 import org.bukkit.command.Command
 import org.bukkit.command.CommandSender
 import org.bukkit.command.ConsoleCommandSender
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
 import java.lang.reflect.Proxy
 import java.nio.file.Path
@@ -47,7 +49,7 @@ class BukkitManagementCommandControllerTest {
         fixture.execute("toggle", "maybe")
 
         assertEquals(true, fixture.repository.settings().enabled)
-        assertEquals(listOf("§cUsage: /itemdrop toggle [on|off]"), fixture.messages)
+        assertEquals(listOf(TEST_PREFIX + "§cUsage: /itemdrop toggle [on|off]"), fixture.messages)
     }
 
     @Test
@@ -80,12 +82,12 @@ class BukkitManagementCommandControllerTest {
         val fixture =
             Fixture(
                 PluginMessageLanguage.EN_US,
-                version = "1.0.0-SNAPSHOT (git 7123cbe0-dirty)",
+                version = "1.0.0-SNAPSHOT (git 7123cbe-dirty)",
             )
 
         fixture.execute("about")
 
-        assertTrue(fixture.messages.single().contains("1.0.0-SNAPSHOT (git 7123cbe0-dirty)"))
+        assertTrue(fixture.messages.any { message -> message.contains("1.0.0-SNAPSHOT (git 7123cbe-dirty)") })
     }
 
     @Test
@@ -94,11 +96,145 @@ class BukkitManagementCommandControllerTest {
         val fixture = Fixture(PluginMessageLanguage.EN_US, backendIdProvider = { backendId })
 
         fixture.execute("info")
+        assertTrue(fixture.messages.any { message -> message.contains("paper-client-translation") })
+        fixture.messages.clear()
         backendId = "bukkit-entity-name"
         fixture.execute("info")
 
-        assertTrue(fixture.messages[0].contains("paper-client-translation"))
-        assertTrue(fixture.messages[1].contains("bukkit-entity-name"))
+        assertTrue(fixture.messages.any { message -> message.contains("bukkit-entity-name") })
+    }
+
+    @Test
+    fun `every command response line uses the translated command prefix`() {
+        val fixture = Fixture(PluginMessageLanguage.ZH_TW)
+
+        fixture.execute("help")
+
+        assertTrue(fixture.messages.isNotEmpty())
+        assertTrue(fixture.messages.all { message -> message.startsWith("§7[§6ItemDropV2§7]§r ") })
+    }
+
+    @Test
+    fun `command prefix is loaded from the selected language yaml`() {
+        val store = BukkitMessageCatalogStore.fromResources(javaClass.classLoader, directory.toFile())
+        assertEquals(BukkitMessageCatalogReloadResult.Applied, store.reload(PluginMessageLanguage.ZH_TW))
+        val languageFile = directory.resolve("zh_tw.yml").toFile()
+        languageFile.writeText(
+            languageFile
+                .readText()
+                .replace(
+                    "prefix: '&7[&6%plugin_name%&7]&r '",
+                    "prefix: '&8[&bIDV2&8]&r  '",
+                ),
+        )
+        assertEquals(BukkitMessageCatalogReloadResult.Applied, store.reload(PluginMessageLanguage.ZH_TW))
+        val fixture =
+            Fixture(
+                PluginMessageLanguage.ZH_TW,
+                catalog = BukkitManagementMessageCatalog.fromStore(store),
+            )
+
+        fixture.execute("help")
+
+        assertTrue(fixture.messages.isNotEmpty())
+        assertTrue(fixture.messages.all { message -> message.startsWith("§8[§bIDV2§8]§r ") })
+        fixture.messages.clear()
+
+        fixture.execute("info")
+
+        assertEquals("§8========== §8[§bIDV2§8]§r  §8==========", fixture.messages.first())
+        assertEquals(fixture.messages.first(), fixture.messages.last())
+    }
+
+    @Test
+    fun `about renders every translated information field from the current runtime snapshot`() {
+        val fixture =
+            Fixture(
+                PluginMessageLanguage.ZH_TW,
+                infoProvider = {
+                    ManagementCommandInfo(
+                        edition = "Community",
+                        server = "paper 26.2",
+                        backend = "bukkit-entity-name",
+                        persistence = "entity-pdc",
+                        virtualStacking = "legacy-drain",
+                        pluginLanguage = "zh_tw",
+                        minecraftLanguage = "en_us",
+                    )
+                },
+            )
+
+        fixture.execute("about")
+
+        assertEquals(9, fixture.messages.size)
+        assertEquals("§8========== §7[§6ItemDropV2§7]§r §8==========", fixture.messages.first())
+        assertEquals(fixture.messages.first(), fixture.messages.last())
+        assertTrue(fixture.messages.subList(1, 8).all { message -> message.startsWith(TEST_PREFIX) })
+        assertTrue(fixture.messages.any { message -> message.contains("Community") })
+        assertTrue(fixture.messages.any { message -> message.contains("paper 26.2") })
+        assertTrue(fixture.messages.any { message -> message.contains("bukkit-entity-name") })
+        assertTrue(fixture.messages.any { message -> message.contains("entity-pdc") })
+        assertTrue(fixture.messages.any { message -> message.contains("legacy-drain") })
+        assertTrue(fixture.messages.any { message -> message.contains("zh_tw") && message.contains("en_us") })
+    }
+
+    @Test
+    fun `information panel boundaries use the configured plugin name`() {
+        val fixture =
+            Fixture(
+                PluginMessageLanguage.EN_US,
+                pluginName = "CustomDrop",
+            )
+
+        fixture.execute("info")
+
+        assertEquals(9, fixture.messages.size)
+        assertTrue(fixture.messages.first().contains("CustomDrop"))
+        assertEquals(fixture.messages.first(), fixture.messages.last())
+        assertTrue(fixture.messages.none { message -> message.contains("%plugin_name%") })
+    }
+
+    @Test
+    fun `management information rejects multiline or formatting injection`() {
+        assertThrows<IllegalArgumentException> {
+            Fixture(
+                PluginMessageLanguage.EN_US,
+                pluginName = "ItemDropV2\nforged",
+            )
+        }
+        assertThrows<IllegalArgumentException> {
+            ManagementCommandInfo(
+                edition = "Community",
+                server = "Paper 26.2\nforged line",
+                backend = "bukkit-entity-name",
+                persistence = "entity-pdc",
+                virtualStacking = "legacy-drain",
+                pluginLanguage = "zh_tw",
+                minecraftLanguage = "en_us",
+            )
+        }
+        assertThrows<IllegalArgumentException> {
+            ManagementCommandInfo(
+                edition = "Community",
+                server = "Paper 26.2\u2028forged line",
+                backend = "bukkit-entity-name",
+                persistence = "entity-pdc",
+                virtualStacking = "legacy-drain",
+                pluginLanguage = "zh_tw",
+                minecraftLanguage = "en_us",
+            )
+        }
+        assertThrows<IllegalArgumentException> {
+            ManagementCommandInfo(
+                edition = "Community",
+                server = "Paper 26.2",
+                backend = "&cmalicious",
+                persistence = "entity-pdc",
+                virtualStacking = "legacy-drain",
+                pluginLanguage = "zh_tw",
+                minecraftLanguage = "en_us",
+            )
+        }
     }
 
     @Test
@@ -202,7 +338,7 @@ class BukkitManagementCommandControllerTest {
 
         assertEquals(2, fixture.messages.size)
         assertTrue(fixture.messages[0].contains("設定載入或寫入失敗"))
-        assertEquals("§c原因：§fstructure: unsafe ＆a green c text", fixture.messages[1])
+        assertEquals(TEST_PREFIX + "§c原因：§fstructure: unsafe ＆a green c text", fixture.messages[1])
         assertEquals(listOf(raw), fixture.failureReasons)
     }
 
@@ -214,7 +350,7 @@ class BukkitManagementCommandControllerTest {
 
         assertEquals(2, fixture.messages.size)
         assertTrue(fixture.messages[0].contains("Unable to update display state"))
-        assertEquals("§cReason: §funknown failure", fixture.messages[1])
+        assertEquals(TEST_PREFIX + "§cReason: §funknown failure", fixture.messages[1])
         assertEquals(listOf(" \n\u0007 "), fixture.failureReasons)
     }
 
@@ -224,13 +360,14 @@ class BukkitManagementCommandControllerTest {
 
         fixture.execute("reload")
 
-        val reason = fixture.messages[1].removePrefix("§cReason: §f")
+        val reason = fixture.messages[1].removePrefix(TEST_PREFIX + "§cReason: §f")
         assertEquals(240, reason.length)
         assertTrue(reason.endsWith("…"))
     }
 
     private class Fixture(
         language: PluginMessageLanguage,
+        pluginName: String = "ItemDropV2",
         private val permissions: Set<String> = setOf(BASIC, HELP, INFO, RELOAD, TOGGLE),
         catalog: BukkitManagementMessageCatalog = BukkitManagementMessageCatalog.load(Fixture::class.java.classLoader),
         version: String = "1.0.0-SNAPSHOT",
@@ -239,6 +376,17 @@ class BukkitManagementCommandControllerTest {
         additionalRecoveryReports: List<ConfigParseRecoveryReport> = emptyList(),
         senderType: Class<out CommandSender> = CommandSender::class.java,
         backendIdProvider: () -> String = { "bukkit" },
+        infoProvider: () -> ManagementCommandInfo = {
+            ManagementCommandInfo(
+                edition = "Runtime",
+                server = "Spigot 1.14",
+                backend = backendIdProvider(),
+                persistence = "entity-pdc-with-journal",
+                virtualStacking = "legacy-drain",
+                pluginLanguage = language.code,
+                minecraftLanguage = "en_us",
+            )
+        },
     ) {
         val repository = FakeSettingsManager(settings(language), failureReason)
         val messages = mutableListOf<String>()
@@ -251,8 +399,9 @@ class BukkitManagementCommandControllerTest {
                 service = ManagementCommandService(repository, LoadedItemRefreshView { refreshCount++ }),
                 language = { repository.settings().messageLanguage },
                 messages = catalog,
+                pluginName = pluginName,
                 version = version,
-                backendIdProvider = backendIdProvider,
+                infoProvider = infoProvider,
                 failureLogger = failureReasons::add,
                 configParseRecoveryConsumer = {
                     pendingRecoveryReport.also { pendingRecoveryReport = null }
@@ -303,6 +452,7 @@ class BukkitManagementCommandControllerTest {
         private const val INFO = "itemdrop.commands.info"
         private const val RELOAD = "itemdrop.commands.reload"
         private const val TOGGLE = "itemdrop.commands.toggle"
+        private const val TEST_PREFIX = "§7[§6ItemDropV2§7]§r "
 
         private fun settings(language: PluginMessageLanguage): ItemDisplaySettings =
             ItemDisplaySettings(

@@ -1,0 +1,12 @@
+# ItemDropV2 item lifetime configuration schema version.
+schema-version: 1
+
+# Default lifetime in seconds.
+# -1 never expires through ItemDropV2 lifetime handling; 0 expires immediately after spawning; positive values may be up to 2^63-1.
+default-seconds: 300
+
+# Override the default lifetime by Bukkit Material name. Names are case-insensitive and normalized to uppercase after loading.
+# To keep one JAR compatible with 1.14 through 26.2, newer Material names unknown to the current server are retained and do not block startup.
+materials:
+  # Minecraft Nether Star item entities remain for 10 minutes by default.
+  NETHER_STAR: 600

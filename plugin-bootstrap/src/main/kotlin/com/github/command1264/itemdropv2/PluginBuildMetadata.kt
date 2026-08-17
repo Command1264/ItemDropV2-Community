@@ -101,7 +101,7 @@ internal data class PluginBuildMetadata(
         private const val DIRTY_ATTRIBUTE = "Git-Dirty"
         private const val FILE_PROTOCOL = "file"
         private const val UNKNOWN_VALUE = "unknown"
-        private val SHORT_COMMIT_PATTERN = Regex("[0-9a-f]{8}")
+        private val SHORT_COMMIT_PATTERN = Regex("[0-9a-f]{7}")
         private val FULL_COMMIT_PATTERN = Regex("[0-9a-f]{40}")
     }
 }
