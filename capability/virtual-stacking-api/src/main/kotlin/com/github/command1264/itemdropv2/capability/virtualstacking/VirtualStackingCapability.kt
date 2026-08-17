@@ -15,6 +15,10 @@ public interface VirtualStackingCapabilityProvider {
     public val id: String
     public val creationCapabilityAvailable: Boolean
 
+    /** Optional config fragment packaged only by an edition that exposes Virtual Stacking settings. */
+    public val configurationFragmentResource: String?
+        get() = null
+
     public fun create(context: VirtualStackingCapabilityContext): VirtualStackingCapability
 }
 

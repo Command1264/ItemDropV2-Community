@@ -24,6 +24,52 @@ import java.util.UUID
 
 class BukkitItemSpawnControllerTest {
     @Test
+    fun `reconciles native ownership before resolving the first presentation`() {
+        val tasks = mutableListOf<() -> Unit>()
+        val order = mutableListOf<String>()
+        var displayState = ItemDisplayStateSnapshot()
+        val controller =
+            BukkitItemSpawnController(
+                service =
+                    ItemDisplayService(
+                        ItemDisplaySettingsRepository { settings() },
+                        ItemPresentationView {
+                            order += "present"
+                            PresentationResult.Applied
+                        },
+                    ),
+                taskExecutor = MainThreadTaskExecutor(tasks::add),
+                warningSink = DisplayWarningSink { error("unexpected warning: $it") },
+                displayStateResolver =
+                    ItemDisplayStateResolver {
+                        order += "resolve"
+                        displayState
+                    },
+                spawnReconciliation = {
+                    order += "reconcile"
+                    displayState =
+                        ItemDisplayStateSnapshot(
+                            owner = ItemOwnerDisplay("Command1", 0, OWNER_ID),
+                            protectionSecondsRemaining = 30,
+                        )
+                },
+            )
+
+        controller.onItemSpawn(
+            ItemSpawnEvent(
+                item {
+                    object : ItemStack(Material.STONE, 1) {
+                        override fun getItemMeta(): ItemMeta? = null
+                    }
+                },
+            ),
+        )
+        tasks.single().invoke()
+
+        assertEquals(listOf("reconcile", "resolve", "present"), order)
+    }
+
+    @Test
     fun `resolves current ownership state when scheduled presentation executes`() {
         val presentations = mutableListOf<ItemPresentation>()
         val tasks = mutableListOf<() -> Unit>()

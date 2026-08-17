@@ -25,12 +25,12 @@ class SqliteJournalCrashRecoveryTest {
 
         runCrashProcess(database, "commit")
         assertOpened(SqliteItemStateJournalStore.open(database, record.identity.worldUuid)).use { store ->
-            assertEquals(2, store.load().single().revision)
+            assertEquals(2, store.readAllRecordsForTest().single().revision)
         }
 
         runCrashProcess(database, "uncommitted")
         assertOpened(SqliteItemStateJournalStore.open(database, record.identity.worldUuid)).use { store ->
-            assertEquals(2, store.load().single().revision)
+            assertEquals(2, store.readAllRecordsForTest().single().revision)
         }
     }
 

@@ -168,4 +168,45 @@ class ItemStateJournalRuntimeTest {
         assertEquals(10, reopened[record.identity]?.revision)
         reopened.shutdown()
     }
+
+    @Test
+    fun `per-world capacity preserves updates and permits a new identity after discard`() {
+        val first = sampleJournalUpsert(1, UUID(0, 721))
+        val second = sampleJournalUpsert(1, UUID(0, 722))
+        val runtime =
+            assertInstanceOf(
+                ItemStateJournalRuntimeOpenResult.Opened::class.java,
+                ItemStateJournalRuntime.open(
+                    directory,
+                    setOf(first.identity.worldUuid),
+                    maximumRecordsPerWorld = 1,
+                ),
+            ).runtime
+
+        assertEquals(ItemStateDurabilityOutcome.Accepted(false), runtime.stage(first))
+        assertEquals(
+            ItemStateDurabilityOutcome.Rejected("RecordCapacityExceeded:1"),
+            runtime.stage(second),
+        )
+        assertInstanceOf(
+            ItemStateDurabilityOutcome.Accepted::class.java,
+            runtime.stage(sampleJournalUpsert(2, first.identity.entityUuid)),
+        )
+        assertInstanceOf(ItemStateDurabilityOutcome.Accepted::class.java, runtime.discard(first.identity))
+        assertInstanceOf(ItemStateDurabilityOutcome.Accepted::class.java, runtime.stage(second))
+        assertInstanceOf(ItemStateJournalRuntimeShutdownResult.Closed::class.java, runtime.shutdown())
+
+        val reopened =
+            assertInstanceOf(
+                ItemStateJournalRuntimeOpenResult.Opened::class.java,
+                ItemStateJournalRuntime.open(
+                    directory,
+                    setOf(first.identity.worldUuid),
+                    maximumRecordsPerWorld = 1,
+                ),
+            ).runtime
+        assertEquals(null, reopened[first.identity])
+        assertEquals(second, reopened[second.identity])
+        reopened.shutdown()
+    }
 }

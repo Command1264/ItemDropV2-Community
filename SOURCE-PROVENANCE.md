@@ -1,6 +1,6 @@
 # Community Source Provenance
 
-- Private mono-repository source commit: `76876cea162041833c5a799b025a39610ab9adc1`
+- Private mono-repository source commit: `4ca3d50c59c1ce01c5ed5efefa5055a9a0120b56`
 - Source working tree dirty: `false`
 - Export policy: explicit Community allowlist
 

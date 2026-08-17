@@ -89,6 +89,23 @@ class BukkitItemStateRepositoryTest {
     }
 
     @Test
+    fun `transient target write does not scan loaded entities when direct canonical lookup misses`() {
+        val transient = FakePersistentDataContainer()
+        val repository =
+            BukkitItemStateRepository(
+                targetResolver = { error("loaded entity fallback must remain lazy during transient writes") },
+                primaryThreadCheck = { true },
+                transientCanonicalTargetResolver = { null },
+            )
+        val lease = repository.leaseTransientTarget(item(ENTITY_UUID, transient))
+        val state = ItemState(null, elapsedLifetimeSeconds = 0, originalLifetimeSeconds = 300)
+
+        assertEquals(ItemStateWriteResult.Applied, repository.save(ENTITY_UUID, state))
+
+        lease.release()
+    }
+
+    @Test
     fun `round trips schema eight with a monotonically increasing revision`() {
         val container = FakePersistentDataContainer()
         val repository = repository(container)
@@ -1198,6 +1215,10 @@ class BukkitItemStateRepositoryTest {
         override fun getAdapterContext(): PersistentDataAdapterContext = throw UnsupportedOperationException("not required by this test")
 
         fun contains(key: NamespacedKey): Boolean = values.containsKey(key)
+
+        fun clear() {
+            values.clear()
+        }
 
         fun snapshot(): Map<String, Pair<Class<*>, Any?>> =
             values.mapKeys { it.key.toString() }.mapValues { it.value.type.primitiveType to it.value.value }

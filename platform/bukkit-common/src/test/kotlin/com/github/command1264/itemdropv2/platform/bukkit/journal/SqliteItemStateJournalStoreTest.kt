@@ -47,7 +47,7 @@ class SqliteItemStateJournalStoreTest {
         val store = assertOpened(SqliteItemStateJournalStore.open(database, record.identity.worldUuid))
         assertEquals(JournalWriteResult.Written, store.append(record))
         assertEquals(JournalWriteResult.Written, store.flush())
-        assertEquals(listOf(record), store.load())
+        assertEquals(listOf(record), store.readAllRecordsForTest())
         store.close()
 
         DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->
@@ -78,10 +78,10 @@ class SqliteItemStateJournalStoreTest {
         assertEquals(JournalWriteResult.Written, store.append(sampleJournalUpsert(2)))
         val refreshed = record.withPresentation(requireNotNull(record.presentation).copy(managedName = "refreshed"))
         assertEquals(JournalWriteResult.Written, store.append(refreshed))
-        assertEquals(listOf(refreshed), store.load())
+        assertEquals(listOf(refreshed), store.readAllRecordsForTest())
 
         assertEquals(JournalWriteResult.Written, store.append(record.asTombstone(4)))
-        assertTrue(store.load().isEmpty())
+        assertTrue(store.readAllRecordsForTest().isEmpty())
         store.close()
     }
 
@@ -122,7 +122,7 @@ class SqliteItemStateJournalStoreTest {
         assertEquals(JournalWriteResult.Written, wal.append(sampleJournalUpsert(2), force = true))
 
         val migrated = assertOpened(SqliteItemStateJournalStore.openWithLegacyMigration(worldDirectory, world))
-        assertEquals(listOf(sampleJournalUpsert(2)), migrated.load())
+        assertEquals(listOf(sampleJournalUpsert(2)), migrated.readAllRecordsForTest())
         migrated.close()
 
         assertTrue(Files.exists(worldDirectory.resolve("manifest")))
@@ -146,7 +146,7 @@ class SqliteItemStateJournalStoreTest {
         }
 
         assertOpened(SqliteItemStateJournalStore.open(database, record.identity.worldUuid)).use { store ->
-            assertEquals(listOf(record), store.load())
+            assertEquals(listOf(record), store.readAllRecordsForTest())
         }
     }
 
@@ -175,7 +175,7 @@ class SqliteItemStateJournalStoreTest {
                         )
                     }
                 assertEquals(JournalWriteResult.Failed("DiskFull"), store.appendBatch(records))
-                assertTrue(store.load().isEmpty())
+                assertTrue(store.readAllRecordsForTest().isEmpty())
             }
         }
     }
@@ -196,6 +196,53 @@ class SqliteItemStateJournalStoreTest {
         assertEquals("CorruptDatabase", failed.reason)
     }
 
+    @Test
+    fun `rejects an oversized world before decoding its rows`() {
+        val database = directory.resolve("item-state.db")
+        val first = sampleJournalUpsert(1, UUID(0, 701))
+        val second = sampleJournalUpsert(1, UUID(0, 702))
+        assertOpened(SqliteItemStateJournalStore.open(database, first.identity.worldUuid)).use { store ->
+            assertEquals(JournalWriteResult.Written, store.appendBatch(listOf(first, second)))
+        }
+        DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { connection ->
+            connection
+                .prepareStatement("UPDATE item_state SET entity_uuid = ? WHERE entity_uuid = ?")
+                .use { statement ->
+                    statement.setString(1, "not-a-uuid")
+                    statement.setString(2, second.identity.entityUuid.toString())
+                    statement.executeUpdate()
+                }
+        }
+
+        val failed =
+            assertInstanceOf(
+                SqliteJournalOpenResult.Failed::class.java,
+                SqliteItemStateJournalStore.open(database, first.identity.worldUuid, maximumRecords = 1),
+            )
+
+        assertEquals("RecordCapacityExceeded:2>1", failed.reason)
+    }
+
+    @Test
+    fun `capacity rejects only new identities and tombstones reclaim space`() {
+        val database = directory.resolve("item-state.db")
+        val first = sampleJournalUpsert(1, UUID(0, 711))
+        val second = sampleJournalUpsert(1, UUID(0, 712))
+        assertOpened(
+            SqliteItemStateJournalStore.open(database, first.identity.worldUuid, maximumRecords = 1),
+        ).use { store ->
+            assertEquals(JournalWriteResult.Written, store.append(first))
+            assertEquals(JournalWriteResult.Failed("RecordCapacityExceeded:1"), store.append(second))
+            assertEquals(JournalWriteResult.Written, store.append(sampleJournalUpsert(2, first.identity.entityUuid)))
+            assertEquals(JournalWriteResult.Written, store.append(first.asTombstone(3)))
+            assertEquals(JournalWriteResult.Written, store.append(second))
+
+            val loaded = mutableListOf<ItemStateJournalRecord>()
+            assertEquals(SqliteJournalReadResult.Loaded(1), store.readRecords { record -> loaded.add(record) })
+            assertEquals(listOf(second), loaded)
+        }
+    }
+
     private fun assertOpened(result: SqliteJournalOpenResult): SqliteItemStateJournalStore =
         assertInstanceOf(SqliteJournalOpenResult.Opened::class.java, result).store
 }
@@ -204,3 +251,9 @@ private fun ItemStateJournalRecord.copyForTest(
     state: ItemState,
     presentation: ItemStateJournalPresentation,
 ): ItemStateJournalRecord = ItemStateJournalRecord.upsert(identity, revision, chunk, sessionId, fingerprint, state, presentation)
+
+internal fun SqliteItemStateJournalStore.readAllRecordsForTest(): List<ItemStateJournalRecord> =
+    buildList {
+        val read = readRecords { record -> add(record) }
+        check(read is SqliteJournalReadResult.Loaded) { "journal read failed: $read" }
+    }

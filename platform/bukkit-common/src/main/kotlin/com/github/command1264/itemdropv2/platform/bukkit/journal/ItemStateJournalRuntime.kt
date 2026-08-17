@@ -4,6 +4,7 @@ import com.github.command1264.itemdropv2.core.ItemStateDurabilityOutcome
 import com.github.command1264.itemdropv2.core.ItemStateDurabilityPort
 import com.github.command1264.itemdropv2.core.ItemStateJournalIdentity
 import com.github.command1264.itemdropv2.core.ItemStateJournalRecord
+import com.github.command1264.itemdropv2.core.ItemStateJournalRecordType
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
@@ -32,7 +33,7 @@ public class ItemStateJournalRuntime private constructor(
     @Suppress("ReturnCount")
     override fun discard(identity: ItemStateJournalIdentity): ItemStateDurabilityOutcome {
         val existing = get(identity) ?: return ItemStateDurabilityOutcome.Accepted(coalesced = true)
-        if (existing.type == com.github.command1264.itemdropv2.core.ItemStateJournalRecordType.TOMBSTONE) {
+        if (existing.type == ItemStateJournalRecordType.TOMBSTONE) {
             return ItemStateDurabilityOutcome.Accepted(coalesced = true)
         }
         if (existing.revision == Long.MAX_VALUE) return ItemStateDurabilityOutcome.Rejected("RevisionExhausted")
@@ -53,11 +54,13 @@ public class ItemStateJournalRuntime private constructor(
 
     public companion object {
         private const val DEFAULT_QUEUE_CAPACITY = 10_000
+        public const val MAXIMUM_RECORDS_PER_WORLD: Int = SqliteItemStateJournalStore.MAXIMUM_RECORDS_PER_WORLD
 
         public fun open(
             root: Path,
             worldUuids: Set<UUID>,
             queueCapacity: Int = DEFAULT_QUEUE_CAPACITY,
+            maximumRecordsPerWorld: Int = MAXIMUM_RECORDS_PER_WORLD,
             failureSink: (String) -> Unit = {},
         ): ItemStateJournalRuntimeOpenResult {
             val normalizedRoot = root.toAbsolutePath().normalize()
@@ -72,6 +75,7 @@ public class ItemStateJournalRuntime private constructor(
                                 normalizedRoot.resolve(worldUuid.toString()),
                                 worldUuid,
                                 queueCapacity,
+                                maximumRecordsPerWorld,
                                 failureSink = { reason -> failureState.fail("Writer:$worldUuid:$reason", notify = true) },
                             )
                     ) {
@@ -107,6 +111,8 @@ private class WorldJournal(
     private val index: ItemStateJournalIndex,
     private val writer: BoundedItemStateJournalWriter,
     private val store: SqliteItemStateJournalStore,
+    private val maximumRecords: Int,
+    private var activeRecordCount: Int,
 ) {
     @Synchronized
     @Suppress("ReturnCount")
@@ -120,12 +126,36 @@ private class WorldJournal(
                 record == existing -> return ItemStateDurabilityOutcome.Accepted(coalesced = true)
             }
         }
+        val createsRecord = createsRecord(record, existing)
+        if (createsRecord && activeRecordCount >= maximumRecords) {
+            return ItemStateDurabilityOutcome.Rejected("RecordCapacityExceeded:$maximumRecords")
+        }
         return when (val staged = writer.stage(record)) {
             is ItemStateDurabilityOutcome.Accepted -> {
                 check(index.apply(record) !is JournalIndexUpdate.Conflict)
+                updateActiveRecordCount(existing, record, createsRecord)
                 staged
             }
             else -> staged
+        }
+    }
+
+    private fun createsRecord(
+        record: ItemStateJournalRecord,
+        existing: ItemStateJournalRecord?,
+    ): Boolean =
+        record.type == ItemStateJournalRecordType.UPSERT &&
+            (existing == null || existing.type == ItemStateJournalRecordType.TOMBSTONE)
+
+    private fun updateActiveRecordCount(
+        existing: ItemStateJournalRecord?,
+        record: ItemStateJournalRecord,
+        createsRecord: Boolean,
+    ) {
+        if (createsRecord) {
+            activeRecordCount++
+        } else if (existing?.type == ItemStateJournalRecordType.UPSERT && record.type == ItemStateJournalRecordType.TOMBSTONE) {
+            activeRecordCount--
         }
     }
 
@@ -169,6 +199,7 @@ private class WorldJournal(
             directory: Path,
             worldUuid: UUID,
             queueCapacity: Int,
+            maximumRecords: Int,
             failureSink: (String) -> Unit,
         ): WorldJournalOpenResult {
             val index = ItemStateJournalIndex()
@@ -178,19 +209,34 @@ private class WorldJournal(
                         SqliteItemStateJournalStore.openWithLegacyMigration(
                             directory,
                             worldUuid,
+                            maximumRecords,
                         )
                 ) {
                     is SqliteJournalOpenResult.Opened -> opened.store
                     is SqliteJournalOpenResult.Failed -> return WorldJournalOpenResult.Failed("Sqlite:${opened.reason}")
                 }
-            for (record in store.load()) {
-                if (index.apply(record) is JournalIndexUpdate.Conflict) {
-                    store.close()
-                    return WorldJournalOpenResult.Failed("RevisionConflict")
+            var revisionConflict = false
+            val readResult =
+                store.readRecords { record ->
+                    if (index.apply(record) is JournalIndexUpdate.Conflict) revisionConflict = true
                 }
+            if (readResult is SqliteJournalReadResult.Failed) {
+                store.close()
+                return WorldJournalOpenResult.Failed("Sqlite:${readResult.reason}")
             }
+            if (revisionConflict) {
+                store.close()
+                return WorldJournalOpenResult.Failed("RevisionConflict")
+            }
+            val loadedCount = (readResult as SqliteJournalReadResult.Loaded).recordCount
             return WorldJournalOpenResult.Opened(
-                WorldJournal(index, BoundedItemStateJournalWriter(queueCapacity, store, failureSink), store),
+                WorldJournal(
+                    index,
+                    BoundedItemStateJournalWriter(queueCapacity, store, failureSink),
+                    store,
+                    maximumRecords,
+                    loadedCount,
+                ),
             )
         }
     }

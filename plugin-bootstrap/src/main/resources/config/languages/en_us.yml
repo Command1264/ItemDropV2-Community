@@ -1,4 +1,6 @@
 command:
+  prefix: '&7[&6%plugin_name%&7]&r '
+
   no-permission: '&cYou do not have permission to use this command.'
 
   help:
@@ -10,7 +12,23 @@ command:
 
     info: '&e/itemdrop info|about &7- Show plugin information'
 
-  info: '&6ItemDropV2 &fv%version% &7(backend: %backend%)'
+  info-header: '&8========== %prefix%&8=========='
+
+  info-version: '&eVersion: &f%version%'
+
+  info-edition: '&eEdition: &f%edition%'
+
+  info-server: '&eServer: &f%server%'
+
+  info-backend: '&ePresentation backend: &f%backend%'
+
+  info-persistence: '&ePersistence: &f%persistence%'
+
+  info-virtual-stacking: '&eVirtual Stacking: &f%virtual_stacking%'
+
+  info-languages: '&ePlugin language: &f%plugin_language% &7| &eMinecraft language: &f%minecraft_language%'
+
+  info-footer: '&8========== %prefix%&8=========='
 
   toggle:
     enabled: '&aDropped-item names are now enabled.'

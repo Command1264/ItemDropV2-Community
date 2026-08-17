@@ -58,6 +58,7 @@ public class BukkitItemSpawnController(
     private val directPresentationView: DirectItemPresentationView<Item>? = null,
     private val transientTargetLeaseFactory: TransientItemTargetLeaseFactory =
         TransientItemTargetLeaseFactory { TransientItemTargetLease {} },
+    private val spawnReconciliation: (Item) -> Unit = {},
 ) : Listener {
     private val coordinator = ScheduledItemDisplayCoordinator(service, taskExecutor, warningSink)
 
@@ -71,6 +72,7 @@ public class BukkitItemSpawnController(
 
         val item = event.entity
         coordinator.submitDeferred(item, directPresentationView, transientTargetLeaseFactory) {
+            spawnReconciliation(item)
             createItemDisplayRequest(
                 item,
                 warningSink,

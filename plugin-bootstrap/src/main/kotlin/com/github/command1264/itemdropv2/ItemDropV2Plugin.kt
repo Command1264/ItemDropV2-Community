@@ -58,6 +58,7 @@ import com.github.command1264.itemdropv2.platform.bukkit.BukkitItemVisibilityRes
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitManagementCommandController
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitManagementMessageCatalog
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitMessageCatalogStore
+import com.github.command1264.itemdropv2.platform.bukkit.BukkitNativeItemOwnershipReconciler
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitPickupMessageCatalog
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitPlaceholderApiTextExpander
 import com.github.command1264.itemdropv2.platform.bukkit.BukkitProjectileBlockDropOwnershipController
@@ -79,6 +80,7 @@ import com.github.command1264.itemdropv2.platform.bukkit.ItemDropV2RuntimeReadin
 import com.github.command1264.itemdropv2.platform.bukkit.ItemOwnershipRefresh
 import com.github.command1264.itemdropv2.platform.bukkit.LegacyConfigMigrationReport
 import com.github.command1264.itemdropv2.platform.bukkit.MainThreadTaskExecutor
+import com.github.command1264.itemdropv2.platform.bukkit.ManagementCommandInfo
 import com.github.command1264.itemdropv2.platform.bukkit.MinecraftLanguageCache
 import com.github.command1264.itemdropv2.platform.bukkit.MinecraftLanguageCatalogParser
 import com.github.command1264.itemdropv2.platform.bukkit.MinecraftLanguageLoadCoordinator
@@ -323,7 +325,13 @@ public class ItemDropV2Plugin : JavaPlugin() {
                     configParseRecoveryReporter = ::reportConfigParseRecovery,
                     paperClientSideTranslationSettingSupported =
                         result.provider.supportsPaperClientSideTranslationSetting,
-                    configurationFragmentResource = result.provider.configurationFragmentResource,
+                    virtualStackingSettingSupported =
+                        checkNotNull(virtualStackingCapabilityProvider).creationCapabilityAvailable,
+                    configurationFragmentResources =
+                        listOfNotNull(
+                            result.provider.configurationFragmentResource,
+                            checkNotNull(virtualStackingCapabilityProvider).configurationFragmentResource,
+                        ),
                     additionalPublicationPreparer = { _, candidate ->
                         val switcher = switchableBackend
                         if (switcher == null) {
@@ -393,7 +401,10 @@ public class ItemDropV2Plugin : JavaPlugin() {
                     fingerprint,
                     settingsManager,
                     runtimeConfiguration.messageCatalog,
-                    BukkitItemStateRepository(),
+                    BukkitItemStateRepository(
+                        revisionGate = null,
+                        loadedEntityCanonicalFallback = requiresLoadedEntityCanonicalFallback(fingerprint.minecraftVersion),
+                    ),
                     settings.enabled,
                 )
             ItemStatePersistenceMode.ENTITY_PDC_WITH_JOURNAL ->
@@ -458,14 +469,17 @@ public class ItemDropV2Plugin : JavaPlugin() {
         itemStateRepository: BukkitItemStateRepository,
         itemDisplayEnabled: Boolean,
         journalPresentationApplied: ((Item) -> Unit)? = null,
+        loadedItemReadiness: (Item) -> Boolean = { true },
     ) {
         enableItemDisplay(
             settingsManager,
             messageCatalog,
             result.backend,
             fingerprint,
+            result.artifactClassifier,
             itemStateRepository,
             journalPresentationApplied,
+            loadedItemReadiness,
         )
         startMetrics()
         runtimeReadiness.markReady()
@@ -590,7 +604,11 @@ public class ItemDropV2Plugin : JavaPlugin() {
                     runtime = runtime,
                     presentation = presentation,
                 )
-            val repository = BukkitItemStateRepository(adapter)
+            val repository =
+                BukkitItemStateRepository(
+                    revisionGate = adapter,
+                    loadedEntityCanonicalFallback = requiresLoadedEntityCanonicalFallback(fingerprint.minecraftVersion),
+                )
             val presentationRefresher =
                 BukkitItemStateJournalPresentationRefresher(
                     runtime = runtime,
@@ -640,6 +658,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 itemStateRecoveryController = recoveryController
             }
             server.pluginManager.registerEvents(recoveryController, this)
+            recoveryController.scheduleLoadedChunkDiscoveryRetries(server)
             itemStateJournalCleanupTaskId =
                 server.scheduler
                     .runTaskTimer(
@@ -650,7 +669,8 @@ public class ItemDropV2Plugin : JavaPlugin() {
                     ).taskId
             consoleLog.info(
                 "ItemDropV2 item-state journal ready; inspected=${recovered.inspected}, " +
-                    "restored=${recovered.restored}.",
+                    "restored=${recovered.restored}; maximum records per world=" +
+                    "${ItemStateJournalRuntime.MAXIMUM_RECORDS_PER_WORLD}.",
             )
             completeActivation(
                 result,
@@ -660,6 +680,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 repository,
                 itemDisplayEnabled,
                 presentationRefresher::refresh,
+                recoveryController::prepareForLifetimeRegistration,
             )
         } catch (error: RuntimeException) {
             diagnostics().error(
@@ -724,8 +745,10 @@ public class ItemDropV2Plugin : JavaPlugin() {
         messageCatalog: BukkitMessageCatalogStore,
         backend: PresentationBackend,
         fingerprint: ServerFingerprint,
+        artifactClassifier: String,
         itemStateRepository: BukkitItemStateRepository,
         journalPresentationApplied: ((Item) -> Unit)?,
+        loadedItemReadiness: (Item) -> Boolean,
     ) {
         val settings = settingsManager.settings()
         val taskExecutor =
@@ -833,15 +856,17 @@ public class ItemDropV2Plugin : JavaPlugin() {
             warningSink,
             taskExecutor,
             capability.carrierNormalization,
+            loadedItemReadiness,
         )
-        registerOwnership(
-            settingsManager,
-            itemStateRepository,
-            warningSink,
-            ownershipDisplayRefresher,
-            fingerprint.minecraftVersion,
-            canonicalItemSpawnCapture,
-        )
+        val nativeItemOwnershipReconciler =
+            registerOwnership(
+                settingsManager,
+                itemStateRepository,
+                warningSink,
+                ownershipDisplayRefresher,
+                fingerprint.minecraftVersion,
+                canonicalItemSpawnCapture,
+            )
         registerPickupProtection(
             settingsManager,
             itemStateRepository,
@@ -883,6 +908,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 rarityResolver,
                 directPresentationView,
                 TransientItemTargetLeaseFactory(itemStateRepository::leaseTransientTarget),
+                nativeItemOwnershipReconciler::reconcile,
             )
         restartLanguageLoader(languageRepository, refreshController, fingerprint, settings.minecraftLanguage)
         configureManagement(
@@ -893,6 +919,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
             fingerprint,
             backend,
             virtualStackingModeResolver,
+            artifactClassifier,
         )
     }
 
@@ -903,6 +930,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
         warningSink: DisplayWarningSink,
         taskExecutor: MainThreadTaskExecutor,
         carrierNormalization: VirtualItemCarrierNormalization,
+        loadedItemReadiness: (Item) -> Boolean,
     ) {
         val wheel =
             ItemProcessingWheel(
@@ -921,6 +949,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 taskExecutor,
                 carrierNormalization,
                 TransientItemTargetLeaseFactory(itemStateRepository::leaseTransientTarget),
+                loadedItemReadiness = loadedItemReadiness,
             )
         itemLifetimeController = lifetimeController
         server.pluginManager.registerEvents(lifetimeController, this)
@@ -946,12 +975,17 @@ public class ItemDropV2Plugin : JavaPlugin() {
         itemRefresh: ItemOwnershipRefresh,
         minecraftVersion: String,
         canonicalItemSpawnCapture: BukkitCanonicalItemSpawnCapture,
-    ) {
+    ): BukkitNativeItemOwnershipReconciler {
         val delayedTaskExecutor =
             DelayedMainThreadTaskExecutor { delayTicks, task ->
                 server.scheduler.runTaskLater(this, Runnable { task() }, delayTicks)
             }
         val assignmentService = ItemOwnershipAssignmentService(itemStateRepository, settingsManager)
+        val nativeItemOwnershipReconciler =
+            BukkitNativeItemOwnershipReconciler(
+                assignmentService = assignmentService,
+                warningSink = warningSink,
+            )
         registerBlockOwnership(
             settingsManager,
             itemStateRepository,
@@ -1036,6 +1070,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                     1L,
                     1L,
                 ).taskId
+        return nativeItemOwnershipReconciler
     }
 
     private fun registerBlockOwnership(
@@ -1239,6 +1274,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
         rarityResolver: BukkitItemRarityResolver,
         directPresentationView: DirectItemPresentationView<Item>,
         transientTargetLeaseFactory: TransientItemTargetLeaseFactory,
+        spawnReconciliation: (Item) -> Unit,
     ): BukkitExistingItemRefreshController {
         server.pluginManager.registerEvents(
             BukkitItemSpawnController(
@@ -1250,6 +1286,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 rarityResolver = rarityResolver,
                 directPresentationView = directPresentationView,
                 transientTargetLeaseFactory = transientTargetLeaseFactory,
+                spawnReconciliation = spawnReconciliation,
             ),
             this,
         )
@@ -1288,6 +1325,7 @@ public class ItemDropV2Plugin : JavaPlugin() {
         fingerprint: ServerFingerprint,
         backend: PresentationBackend,
         virtualStackingModeResolver: VirtualStackingRuntimeModeResolver,
+        artifactClassifier: String,
     ) {
         val managementService =
             ManagementCommandService(
@@ -1317,8 +1355,37 @@ public class ItemDropV2Plugin : JavaPlugin() {
                 service = managementService,
                 language = { settingsManager.settings().messageLanguage },
                 messages = BukkitManagementMessageCatalog.fromStore(messageCatalog),
+                pluginName = managementInformationValue(description.name),
                 version = buildMetadata.displayVersion(description.version),
-                backendIdProvider = { backend.id },
+                infoProvider = {
+                    val currentSettings = settingsManager.settings()
+                    ManagementCommandInfo(
+                        edition = managementInformationValue(editionDisplayName(artifactClassifier)),
+                        server =
+                            managementInformationValue(
+                                "${fingerprint.platform.name.lowercase().replaceFirstChar(Char::uppercase)} " +
+                                    fingerprint.minecraftVersion,
+                            ),
+                        backend = managementInformationValue(backend.id),
+                        persistence =
+                            managementInformationValue(
+                                ItemStatePersistenceModeSelector()
+                                    .select(fingerprint)
+                                    .name
+                                    .lowercase()
+                                    .replace('_', '-'),
+                            ),
+                        virtualStacking =
+                            managementInformationValue(
+                                virtualStackingRuntimeModeName(
+                                    currentSettings.virtualStacking,
+                                    virtualStackingModeResolver,
+                                ),
+                            ),
+                        pluginLanguage = managementInformationValue(currentSettings.messageLanguage.code),
+                        minecraftLanguage = managementInformationValue(currentSettings.minecraftLanguage.value),
+                    )
+                },
                 failureLogger = { reason ->
                     diagnostics().warning("ItemDropV2 management command failed: ${safe(reason)}")
                 },
@@ -1338,6 +1405,34 @@ public class ItemDropV2Plugin : JavaPlugin() {
         val mode = virtualStackingRuntimeModeName(settings, modeResolver)
         diagnosticMetadata = diagnosticMetadata + ("virtual-stacking.runtime-mode" to mode)
         consoleLog.info("ItemDropV2 virtual stacking runtime mode: $mode; materialization=disabled.")
+    }
+
+    private fun editionDisplayName(artifactClassifier: String): String =
+        when (artifactClassifier) {
+            "community" -> "Community"
+            "pro" -> "Pro"
+            "single-runtime" -> "Runtime"
+            else -> artifactClassifier
+        }
+
+    private fun managementInformationValue(value: String): String {
+        val normalized =
+            value
+                .map { character ->
+                    when {
+                        character == '&' -> '＆'
+                        character == '§' ||
+                            character.isISOControl() ||
+                            Character.getType(character) == Character.FORMAT.toInt() ||
+                            Character.getType(character) == Character.LINE_SEPARATOR.toInt() ||
+                            Character.getType(character) == Character.PARAGRAPH_SEPARATOR.toInt() -> ' '
+                        else -> character
+                    }
+                }.joinToString("")
+                .trim()
+                .replace(Regex("\\s+"), " ")
+                .take(MAX_MANAGEMENT_INFORMATION_VALUE_LENGTH)
+        return normalized.ifEmpty { UNKNOWN_MANAGEMENT_INFORMATION_VALUE }
     }
 
     private fun loadVirtualStackingCapabilityProvider(): VirtualStackingCapabilityLoadResult =
@@ -1548,6 +1643,8 @@ public class ItemDropV2Plugin : JavaPlugin() {
     private companion object {
         private val unsafeLogCharacters = Regex("[\\r\\n\\t]")
         private const val MAX_LOG_VALUE_LENGTH = 500
+        private const val MAX_MANAGEMENT_INFORMATION_VALUE_LENGTH = 120
+        private const val UNKNOWN_MANAGEMENT_INFORMATION_VALUE = "unknown"
         private const val MAX_CONFIG_ERRORS = 20
         private const val MAX_RUNTIME_WARNINGS_PER_KEY = 5
         private const val ITEM_STATE_JOURNAL_DIRECTORY = "state-journal"
@@ -1558,3 +1655,13 @@ public class ItemDropV2Plugin : JavaPlugin() {
         private const val PLACEHOLDER_API_PLUGIN_NAME = "PlaceholderAPI"
     }
 }
+
+internal fun requiresLoadedEntityCanonicalFallback(minecraftVersion: String): Boolean {
+    val release = minecraftVersion.substringBefore('-').split('.')
+    return release.size >= 2 &&
+        release[0].toIntOrNull() == LEGACY_CANONICAL_FALLBACK_MAJOR &&
+        release[1].toIntOrNull() == LEGACY_CANONICAL_FALLBACK_MINOR
+}
+
+private const val LEGACY_CANONICAL_FALLBACK_MAJOR = 1
+private const val LEGACY_CANONICAL_FALLBACK_MINOR = 14

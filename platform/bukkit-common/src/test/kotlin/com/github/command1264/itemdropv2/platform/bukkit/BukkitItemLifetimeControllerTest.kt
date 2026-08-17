@@ -35,7 +35,140 @@ import java.lang.reflect.Method
 import java.lang.reflect.Proxy
 import java.util.UUID
 
+@Suppress("LargeClass")
 class BukkitItemLifetimeControllerTest {
+    @Test
+    fun `loaded item recovery gate runs before startup lifetime registration`() {
+        val repository = SequencedRepository(ArrayDeque(listOf(ItemStateLoadResult.Absent)))
+        val item = itemProxy()
+        val chunk =
+            proxy<Chunk> { method, _ ->
+                when (method.name) {
+                    "getEntities" -> arrayOf(item)
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val world =
+            proxy<World> { method, _ ->
+                when (method.name) {
+                    "getLoadedChunks" -> arrayOf(chunk)
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getWorlds" -> listOf(world)
+                    "getEntity" -> item
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val calls = mutableListOf<String>()
+        val fixture =
+            registrationFixture(
+                repository = repository,
+                item = item,
+                server = server,
+                loadedItemReadiness = {
+                    calls += "recover"
+                    false
+                },
+            )
+
+        fixture.controller.registerLoadedItems()
+
+        assertEquals(listOf("recover"), calls)
+        assertTrue(repository.savedStates.isEmpty())
+        assertTrue(fixture.wheel.trackedEntityIds().isEmpty())
+    }
+
+    @Test
+    fun `loaded item recovery gate failure skips startup registration with a warning`() {
+        val repository = SequencedRepository(ArrayDeque(listOf(ItemStateLoadResult.Absent)))
+        val item = itemProxy()
+        val chunk =
+            proxy<Chunk> { method, _ ->
+                if (method.name == "getEntities") arrayOf(item) else defaultValue(method.returnType)
+            }
+        val world =
+            proxy<World> { method, _ ->
+                if (method.name == "getLoadedChunks") arrayOf(chunk) else defaultValue(method.returnType)
+            }
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getWorlds" -> listOf(world)
+                    "getEntity" -> item
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val fixture =
+            registrationFixture(
+                repository = repository,
+                item = item,
+                server = server,
+                loadedItemReadiness = { error("recovery unavailable") },
+            )
+
+        fixture.controller.registerLoadedItems()
+
+        assertEquals(listOf("loaded item recovery readiness failed (IllegalStateException)"), fixture.warnings)
+        assertTrue(repository.savedStates.isEmpty())
+        assertTrue(fixture.wheel.trackedEntityIds().isEmpty())
+    }
+
+    @Test
+    fun `startup loaded chunk retry registers an item published after the initial empty snapshot`() {
+        val repository =
+            SequencedRepository(
+                ArrayDeque(listOf(ItemStateLoadResult.Loaded(ItemState(null, remainingLifetimeSeconds = 40)))),
+            )
+        val item = itemProxy()
+        var entityReads = 0
+        val chunk =
+            proxy<Chunk> { method, _ ->
+                when (method.name) {
+                    "getEntities" ->
+                        if (entityReads++ == 0) {
+                            emptyArray<org.bukkit.entity.Entity>()
+                        } else {
+                            arrayOf(item)
+                        }
+                    "isLoaded" -> true
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val world =
+            proxy<World> { method, _ ->
+                if (method.name == "getLoadedChunks") arrayOf(chunk) else defaultValue(method.returnType)
+            }
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getWorlds" -> listOf(world)
+                    "getEntity" -> item
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val readinessCalls = mutableListOf<UUID>()
+        val fixture =
+            registrationFixture(
+                repository = repository,
+                item = item,
+                server = server,
+                loadedItemReadiness = {
+                    readinessCalls += it.uniqueId
+                    true
+                },
+            )
+
+        fixture.controller.registerLoadedItems()
+        fixture.tasks.removeFirst().invoke()
+
+        assertEquals(listOf(ENTITY_ID), readinessCalls)
+        assertEquals(setOf(ENTITY_ID), fixture.wheel.trackedEntityIds())
+    }
+
     @Test
     fun `spawn registration runs at highest before native item merge`() {
         val handler =
@@ -132,6 +265,25 @@ class BukkitItemLifetimeControllerTest {
         }
         fixture.controller.processNextSlot()
         assertEquals(298L, repository.state?.remainingLifetimeSeconds)
+    }
+
+    @Test
+    fun `spawned item processing reuses its registered wrapper without a global entity scan`() {
+        val repository = SpawnStateRepository()
+        val item = itemProxy()
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getEntity", "getWorlds" -> error("registered wrapper should avoid global lookup")
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val fixture = registrationFixture(repository, item = item, server = server)
+
+        fixture.controller.onItemSpawn(ItemSpawnEvent(item))
+        repeat(ItemProcessingWheel.SLOT_COUNT) { fixture.controller.processNextSlot() }
+
+        assertEquals(299L, repository.state?.remainingLifetimeSeconds)
     }
 
     @Test
@@ -434,6 +586,122 @@ class BukkitItemLifetimeControllerTest {
     }
 
     @Test
+    fun `transiently invisible item remains scheduled for the next lifetime cycle`() {
+        val repository = RecordingRepository(mutableMapOf(ENTITY_ID to ItemState(null, remainingLifetimeSeconds = 40)))
+        val item = itemProxy()
+        var directLookups = 0
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getEntity" -> if (directLookups++ == 0) null else item
+                    "getWorlds" -> emptyList<World>()
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val wheel = ItemProcessingWheel()
+        val controller =
+            BukkitItemLifetimeController(
+                server,
+                ItemLifetimeService(repository, testSettingsRepository()),
+                wheel,
+                ItemOwnershipRefresh {},
+                DisplayWarningSink { error(it) },
+                MainThreadTaskExecutor { it() },
+                loadedChunkCheck = { true },
+            )
+        wheel.register(ENTITY_ID)
+
+        repeat(ItemProcessingWheel.SLOT_COUNT) { controller.processNextSlot() }
+
+        assertEquals(40L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(wheel.isRegistered(ENTITY_ID))
+
+        repeat(ItemProcessingWheel.SLOT_COUNT) { controller.processNextSlot() }
+
+        assertEquals(39L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(wheel.isRegistered(ENTITY_ID))
+    }
+
+    @Test
+    fun `transiently invalid canonical item remains scheduled until it becomes valid`() {
+        val repository = RecordingRepository(mutableMapOf(ENTITY_ID to ItemState(null, remainingLifetimeSeconds = 40)))
+        val itemState = MutableItemState(valid = false)
+        val item = itemProxy(state = itemState)
+        val server = proxy<Server> { method, _ -> if (method.name == "getEntity") item else defaultValue(method.returnType) }
+        val wheel = ItemProcessingWheel()
+        val controller =
+            BukkitItemLifetimeController(
+                server,
+                ItemLifetimeService(repository, testSettingsRepository()),
+                wheel,
+                ItemOwnershipRefresh {},
+                DisplayWarningSink { error(it) },
+                MainThreadTaskExecutor { it() },
+                loadedChunkCheck = { true },
+            )
+        wheel.register(ENTITY_ID)
+
+        repeat(ItemProcessingWheel.SLOT_COUNT) { controller.processNextSlot() }
+
+        assertEquals(40L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(wheel.isRegistered(ENTITY_ID))
+
+        itemState.valid = true
+        repeat(ItemProcessingWheel.SLOT_COUNT) { controller.processNextSlot() }
+
+        assertEquals(39L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(wheel.isRegistered(ENTITY_ID))
+    }
+
+    @Test
+    fun `invalid registered wrapper is replaced by a valid canonical wrapper`() {
+        val repository = RecordingRepository(mutableMapOf(ENTITY_ID to ItemState(null, remainingLifetimeSeconds = 40)))
+        val registered = itemProxy(state = MutableItemState(valid = false))
+        val canonical = itemProxy()
+        val server = proxy<Server> { method, _ -> if (method.name == "getEntity") canonical else defaultValue(method.returnType) }
+        val fixture = registrationFixture(repository, item = registered, server = server)
+
+        fixture.controller.onItemSpawn(ItemSpawnEvent(registered))
+        repeat(ItemProcessingWheel.SLOT_COUNT) { fixture.controller.processNextSlot() }
+
+        assertEquals(39L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(fixture.wheel.isRegistered(ENTITY_ID))
+    }
+
+    @Test
+    fun `item absent for twenty lifetime cycles is forgotten`() {
+        val repository = RecordingRepository(mutableMapOf(ENTITY_ID to ItemState(null, remainingLifetimeSeconds = 40)))
+        val server =
+            proxy<Server> { method, _ ->
+                when (method.name) {
+                    "getEntity" -> null
+                    "getWorlds" -> emptyList<World>()
+                    else -> defaultValue(method.returnType)
+                }
+            }
+        val wheel = ItemProcessingWheel()
+        val controller =
+            BukkitItemLifetimeController(
+                server,
+                ItemLifetimeService(repository, testSettingsRepository()),
+                wheel,
+                ItemOwnershipRefresh {},
+                DisplayWarningSink { error(it) },
+                MainThreadTaskExecutor { it() },
+                loadedChunkCheck = { true },
+            )
+        wheel.register(ENTITY_ID)
+
+        repeat(ItemProcessingWheel.SLOT_COUNT * 19) { controller.processNextSlot() }
+        assertTrue(wheel.isRegistered(ENTITY_ID))
+
+        repeat(ItemProcessingWheel.SLOT_COUNT) { controller.processNextSlot() }
+
+        assertEquals(40L, repository.states.getValue(ENTITY_ID).remainingLifetimeSeconds)
+        assertTrue(!wheel.isRegistered(ENTITY_ID))
+    }
+
+    @Test
     fun `stale entity lookup does not advance lifetime after its chunk unloaded`() {
         val repository = RecordingRepository(mutableMapOf(ENTITY_ID to ItemState(null, remainingLifetimeSeconds = 40)))
         val item = itemProxy()
@@ -582,6 +850,77 @@ class BukkitItemLifetimeControllerTest {
     }
 
     @Test
+    fun `chunk load retry continues after a partial old server entity snapshot`() {
+        val repository =
+            SequencedRepository(
+                ArrayDeque(
+                    listOf(
+                        ItemStateLoadResult.Loaded(ItemState(null, remainingLifetimeSeconds = 40)),
+                        ItemStateLoadResult.Loaded(ItemState(null, remainingLifetimeSeconds = 40)),
+                    ),
+                ),
+            )
+        val fixture = registrationFixture(repository)
+        val delayed = itemProxy(TARGET_ID)
+        var entityReads = 0
+        val chunk =
+            proxy<Chunk> { method, _ ->
+                when (method.name) {
+                    "getEntities" ->
+                        if (entityReads++ == 0) {
+                            arrayOf(fixture.item)
+                        } else {
+                            arrayOf(fixture.item, delayed)
+                        }
+                    "isLoaded" -> true
+                    else -> defaultValue(method.returnType)
+                }
+            }
+
+        fixture.controller.onChunkLoad(ChunkLoadEvent(chunk, false))
+        fixture.tasks.removeFirst().invoke()
+
+        assertEquals(setOf(ENTITY_ID, TARGET_ID), fixture.wheel.trackedEntityIds())
+    }
+
+    @Test
+    fun `chunk load retry restores an observed item lost during transient hydration`() {
+        val repository =
+            SequencedRepository(
+                ArrayDeque(
+                    listOf(
+                        ItemStateLoadResult.Loaded(ItemState(null, remainingLifetimeSeconds = 40)),
+                        ItemStateLoadResult.Loaded(ItemState(null, remainingLifetimeSeconds = 40)),
+                    ),
+                ),
+            )
+        var chunkReady = true
+        val fixture =
+            registrationFixture(
+                repository,
+                loadedChunkCheck = { chunkReady },
+            )
+        val chunk =
+            proxy<Chunk> { method, _ ->
+                when (method.name) {
+                    "getEntities" -> arrayOf(fixture.item)
+                    "isLoaded" -> true
+                    else -> defaultValue(method.returnType)
+                }
+            }
+
+        fixture.controller.onChunkLoad(ChunkLoadEvent(chunk, false))
+        chunkReady = false
+        repeat(ItemProcessingWheel.SLOT_COUNT) { fixture.controller.processNextSlot() }
+        assertTrue(fixture.wheel.trackedEntityIds().isEmpty())
+
+        chunkReady = true
+        fixture.tasks.removeFirst().invoke()
+
+        assertEquals(setOf(ENTITY_ID), fixture.wheel.trackedEntityIds())
+    }
+
+    @Test
     fun `chunk recovery normalizes carrier after lifetime state is ready`() {
         val repository =
             SequencedRepository(
@@ -622,8 +961,9 @@ class BukkitItemLifetimeControllerTest {
             TransientItemTargetLeaseFactory { TransientItemTargetLease {} },
         loadedChunkCheck: (Item) -> Boolean = { true },
         settingsRepository: ItemDisplaySettingsRepository = testSettingsRepository(),
+        server: Server = proxy { method, _ -> if (method.name == "getEntity") item else defaultValue(method.returnType) },
+        loadedItemReadiness: (Item) -> Boolean = { true },
     ): RegistrationFixture {
-        val server = proxy<Server> { method, _ -> if (method.name == "getEntity") item else defaultValue(method.returnType) }
         val tasks = ArrayDeque<() -> Unit>()
         val warnings = mutableListOf<String>()
         val wheel = ItemProcessingWheel()
@@ -643,6 +983,7 @@ class BukkitItemLifetimeControllerTest {
                 carrierNormalization,
                 transientTargetLeaseFactory,
                 loadedChunkCheck,
+                loadedItemReadiness,
             ),
             wheel,
             item,

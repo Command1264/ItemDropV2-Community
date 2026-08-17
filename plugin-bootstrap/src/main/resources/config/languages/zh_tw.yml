@@ -1,4 +1,6 @@
 command:
+  prefix: '&7[&6%plugin_name%&7]&r '
+
   no-permission: '&c你沒有權限使用此指令。'
 
   help:
@@ -10,7 +12,23 @@ command:
 
     info: '&e/itemdrop info|about &7- 顯示插件資訊'
 
-  info: '&6ItemDropV2 &fv%version% &7（backend: %backend%）'
+  info-header: '&8========== %prefix%&8=========='
+
+  info-version: '&e版本：&f%version%'
+
+  info-edition: '&e版本類型：&f%edition%'
+
+  info-server: '&e伺服器：&f%server%'
+
+  info-backend: '&e顯示方案：&f%backend%'
+
+  info-persistence: '&e資料方案：&f%persistence%'
+
+  info-virtual-stacking: '&eVirtual Stacking：&f%virtual_stacking%'
+
+  info-languages: '&e插件語言：&f%plugin_language% &7| &eMinecraft 語言：&f%minecraft_language%'
+
+  info-footer: '&8========== %prefix%&8=========='
 
   toggle:
     enabled: '&a已開啟掉落物名稱顯示。'

@@ -25,6 +25,7 @@ public class BukkitItemStateRepository internal constructor(
     private val fallbackTargetResolver: (UUID) -> PersistentFallbackTarget? = { null },
     private val itemResolver: (UUID) -> Item? = { null },
     private val revisionGate: ItemStateRevisionDurabilityGate? = null,
+    private val transientCanonicalTargetResolver: (UUID) -> PersistentDataContainer? = targetResolver,
 ) : ItemStateRepository,
     RevisionedItemStateRepository {
     private val transientTargets = mutableMapOf<UUID, TransientTargetEntry>()
@@ -32,6 +33,14 @@ public class BukkitItemStateRepository internal constructor(
     public constructor() : this(revisionGate = null)
 
     public constructor(revisionGate: ItemStateRevisionDurabilityGate?) : this(
+        revisionGate = revisionGate,
+        loadedEntityCanonicalFallback = true,
+    )
+
+    public constructor(
+        revisionGate: ItemStateRevisionDurabilityGate?,
+        loadedEntityCanonicalFallback: Boolean,
+    ) : this(
         targetResolver = { entityId ->
             resolveBukkitItem(entityId)?.persistentDataContainer
         },
@@ -41,6 +50,11 @@ public class BukkitItemStateRepository internal constructor(
         },
         itemResolver = ::resolveBukkitItem,
         revisionGate = revisionGate,
+        transientCanonicalTargetResolver = { entityId ->
+            val direct = Bukkit.getServer().getEntity(entityId) as? Item
+            val canonical = direct ?: if (loadedEntityCanonicalFallback) resolveBukkitItem(entityId) else null
+            canonical?.persistentDataContainer
+        },
     )
 
     override fun load(entityId: UUID): ItemStateLoadResult = load(entityId, inspectItemStackFallback = false)
@@ -120,7 +134,7 @@ public class BukkitItemStateRepository internal constructor(
         state: ItemState,
     ): RevisionedItemStateWriteResult =
         try {
-            val canonical = targetResolver(entityId)?.takeIf { it !== container }
+            val canonical = transientCanonicalTargetResolver(entityId)?.takeIf { it !== container }
             val loadedTargets = listOfNotNull(container, canonical).map { BukkitItemStateCodec.load(it, epochMillis()) }
             loadedTargets.firstOrNull { it.nextRevisionOrReject() == null }?.let {
                 return it.toRevisionRejection()

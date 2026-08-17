@@ -19,6 +19,12 @@ Open Source software。第一方 Community 原始碼使用
 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。名稱與標誌使用規則見
 [TRADEMARKS.md](TRADEMARKS.md)。
 
+使用、建置、設定、相容性與架構文件由[公開文件索引](docs/README.md)開始；安全問題請依
+[安全政策](SECURITY.md)私密回報。
+
+公開 snapshot 的來源、manifest 與隔離方式見
+[Community 原始碼發布方式](docs/source-publication.md)。
+
 ## Community 公開來源邊界
 
 這是由私有開發 mono-repository 透過 allowlist 產生的 Community-only source publication。

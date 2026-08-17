@@ -25,8 +25,15 @@ import java.util.UUID
 public class SqliteItemStateJournalStore internal constructor(
     private val worldUuid: UUID,
     private val connection: Connection,
+    private val maximumRecords: Int = MAXIMUM_RECORDS_PER_WORLD,
 ) : JournalRecordSink,
     AutoCloseable {
+    private var persistedRecordCount: Int = queryRecordCount()
+
+    init {
+        require(maximumRecords > 0) { "maximum journal records must be positive" }
+    }
+
     override fun append(record: ItemStateJournalRecord): JournalWriteResult = appendBatch(listOf(record))
 
     override fun appendBatch(records: List<ItemStateJournalRecord>): JournalWriteResult {
@@ -44,24 +51,36 @@ public class SqliteItemStateJournalStore internal constructor(
             JournalWriteResult.Failed(SqliteJournalFailureClassifier.classify(error))
         }
 
-    public fun load(): List<ItemStateJournalRecord> {
-        val records = mutableListOf<ItemStateJournalRecord>()
-        connection
-            .prepareStatement(
-                """
-                SELECT entity_uuid, revision, chunk_x, chunk_z, session_uuid, material_key, metadata_sha256,
-                       owner_uuid, protection_seconds, elapsed_lifetime_seconds, original_lifetime_seconds,
-                       virtual_amount, managed_name, original_name_present, original_name, custom_name_visible
-                FROM item_state WHERE world_uuid = ? ORDER BY entity_uuid
-                """.trimIndent(),
-            ).use { statement ->
-                statement.setString(1, worldUuid.toString())
-                statement.executeQuery().use { rows ->
-                    while (rows.next()) records += rows.toRecord(loadEligibleOwners(rows.getString("entity_uuid")))
-                }
+    public fun readRecords(consumer: (ItemStateJournalRecord) -> Unit): SqliteJournalReadResult =
+        try {
+            val recordCount = queryRecordCount()
+            if (recordCount > maximumRecords) {
+                return SqliteJournalReadResult.Failed(recordCapacityReason(recordCount, maximumRecords))
             }
-        return records
-    }
+            persistedRecordCount = recordCount
+            val eligibleOwners = loadEligibleOwners(recordCount)
+            connection
+                .prepareStatement(
+                    """
+                    SELECT entity_uuid, revision, chunk_x, chunk_z, session_uuid, material_key, metadata_sha256,
+                           owner_uuid, protection_seconds, elapsed_lifetime_seconds, original_lifetime_seconds,
+                           virtual_amount, managed_name, original_name_present, original_name, custom_name_visible
+                    FROM item_state WHERE world_uuid = ? ORDER BY entity_uuid
+                    """.trimIndent(),
+                ).use { statement ->
+                    statement.setString(1, worldUuid.toString())
+                    statement.executeQuery().use { rows ->
+                        while (rows.next()) {
+                            consumer(rows.toRecord(eligibleOwners[rows.getString("entity_uuid")].orEmpty()))
+                        }
+                    }
+                }
+            SqliteJournalReadResult.Loaded(recordCount)
+        } catch (error: SQLException) {
+            SqliteJournalReadResult.Failed(SqliteJournalFailureClassifier.classify(error))
+        } catch (error: IllegalArgumentException) {
+            SqliteJournalReadResult.Failed(error.javaClass.simpleName)
+        }
 
     override fun close() {
         connection.close()
@@ -74,6 +93,9 @@ public class SqliteItemStateJournalStore internal constructor(
         if (record.type == ItemStateJournalRecordType.TOMBSTONE) {
             delete(record.identity.entityUuid, record.revision)
             return
+        }
+        if (existingRevision == null && persistedRecordCount >= maximumRecords) {
+            throw JournalRecordCapacityExceededException(maximumRecords)
         }
         deleteEligibleOwners(record.identity.entityUuid)
         if (existingRevision == null) insert(record) else update(record)
@@ -92,6 +114,7 @@ public class SqliteItemStateJournalStore internal constructor(
             bindRecord(it, record)
             it.executeUpdate()
         }
+        persistedRecordCount++
     }
 
     private fun update(record: ItemStateJournalRecord) {
@@ -154,14 +177,46 @@ public class SqliteItemStateJournalStore internal constructor(
             }
     }
 
-    private fun loadEligibleOwners(entityUuid: String): List<UUID> =
+    private fun loadEligibleOwners(recordCount: Int): Map<String, List<UUID>> {
+        val maximumOwnerRows = recordCount.toLong() * ItemOwnership.MAX_ELIGIBLE_OWNERS
+        val ownerCount =
+            connection
+                .prepareStatement("SELECT COUNT(*) FROM item_state_eligible_owner WHERE world_uuid = ?")
+                .use { statement ->
+                    statement.setString(1, worldUuid.toString())
+                    statement.executeQuery().use { rows ->
+                        check(rows.next()) { "eligible owner count query returned no row" }
+                        rows.getLong(1)
+                    }
+                }
+        require(ownerCount <= maximumOwnerRows) { "eligible owner rows exceed supported count" }
+        val owners = linkedMapOf<String, MutableList<UUID>>()
         connection
             .prepareStatement(
-                "SELECT owner_uuid FROM item_state_eligible_owner WHERE world_uuid = ? AND entity_uuid = ? ORDER BY ordinal",
+                """
+                SELECT entity_uuid, owner_uuid FROM item_state_eligible_owner
+                WHERE world_uuid = ? ORDER BY entity_uuid, ordinal
+                """.trimIndent(),
             ).use { statement ->
                 statement.setString(1, worldUuid.toString())
-                statement.setString(2, entityUuid)
-                statement.executeQuery().use { rows -> buildList { while (rows.next()) add(UUID.fromString(rows.getString(1))) } }
+                statement.executeQuery().use { rows ->
+                    while (rows.next()) {
+                        owners.getOrPut(rows.getString("entity_uuid"), ::mutableListOf).add(UUID.fromString(rows.getString("owner_uuid")))
+                    }
+                }
+            }
+        return owners
+    }
+
+    private fun queryRecordCount(): Int =
+        connection
+            .prepareStatement("SELECT COUNT(*) FROM item_state WHERE world_uuid = ?")
+            .use { statement ->
+                statement.setString(1, worldUuid.toString())
+                statement.executeQuery().use { rows ->
+                    check(rows.next()) { "journal record count query returned no row" }
+                    rows.getLong(1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                }
             }
 
     private fun deleteEligibleOwners(entityUuid: UUID) {
@@ -176,12 +231,14 @@ public class SqliteItemStateJournalStore internal constructor(
         entityUuid: UUID,
         revision: Long,
     ) {
-        connection.prepareStatement("DELETE FROM item_state WHERE world_uuid = ? AND entity_uuid = ? AND revision <= ?").use {
-            it.setString(1, worldUuid.toString())
-            it.setString(2, entityUuid.toString())
-            it.setLong(3, revision)
-            it.executeUpdate()
-        }
+        val deleted =
+            connection.prepareStatement("DELETE FROM item_state WHERE world_uuid = ? AND entity_uuid = ? AND revision <= ?").use {
+                it.setString(1, worldUuid.toString())
+                it.setString(2, entityUuid.toString())
+                it.setLong(3, revision)
+                it.executeUpdate()
+            }
+        persistedRecordCount -= deleted
     }
 
     private fun ResultSet.toRecord(eligibleOwners: List<UUID>): ItemStateJournalRecord {
@@ -214,15 +271,22 @@ public class SqliteItemStateJournalStore internal constructor(
 
     private fun transaction(block: () -> Unit): JournalWriteResult {
         var result: JournalWriteResult = JournalWriteResult.Written
+        val initialRecordCount = persistedRecordCount
         try {
             connection.autoCommit = false
             block()
             connection.commit()
         } catch (error: SQLException) {
             rollbackQuietly()
+            persistedRecordCount = initialRecordCount
             result = JournalWriteResult.Failed(SqliteJournalFailureClassifier.classify(error))
+        } catch (error: JournalRecordCapacityExceededException) {
+            rollbackQuietly()
+            persistedRecordCount = initialRecordCount
+            result = JournalWriteResult.Failed("RecordCapacityExceeded:${error.maximumRecords}")
         } catch (error: IllegalArgumentException) {
             rollbackQuietly()
+            persistedRecordCount = initialRecordCount
             result = JournalWriteResult.Failed(error.javaClass.simpleName)
         } finally {
             try {
@@ -246,6 +310,7 @@ public class SqliteItemStateJournalStore internal constructor(
 
     public companion object {
         public const val DATABASE_FILE: String = "item-state.db"
+        public const val MAXIMUM_RECORDS_PER_WORLD: Int = 10_000
         private const val SCHEMA_VERSION = 1
         private const val COLUMNS =
             "world_uuid, entity_uuid, revision, chunk_x, chunk_z, session_uuid, material_key, metadata_sha256, " +
@@ -255,16 +320,18 @@ public class SqliteItemStateJournalStore internal constructor(
         public fun open(
             database: Path,
             worldUuid: UUID,
-        ): SqliteJournalOpenResult = openInternal(database.toAbsolutePath().normalize(), worldUuid, create = true)
+            maximumRecords: Int = MAXIMUM_RECORDS_PER_WORLD,
+        ): SqliteJournalOpenResult = openInternal(database.toAbsolutePath().normalize(), worldUuid, create = true, maximumRecords)
 
         public fun openWithLegacyMigration(
             worldDirectory: Path,
             worldUuid: UUID,
+            maximumRecords: Int = MAXIMUM_RECORDS_PER_WORLD,
         ): SqliteJournalOpenResult {
             val directory = worldDirectory.toAbsolutePath().normalize()
             val database = directory.resolve(DATABASE_FILE)
-            if (Files.exists(database)) return openInternal(database, worldUuid, create = false)
-            return migrateLegacy(directory, database, worldUuid)
+            if (Files.exists(database)) return openInternal(database, worldUuid, create = false, maximumRecords)
+            return migrateLegacy(directory, database, worldUuid, maximumRecords)
         }
 
         @Suppress("ReturnCount")
@@ -272,6 +339,7 @@ public class SqliteItemStateJournalStore internal constructor(
             directory: Path,
             database: Path,
             worldUuid: UUID,
+            maximumRecords: Int,
         ): SqliteJournalOpenResult {
             val records =
                 when (val loaded = loadLegacy(directory)) {
@@ -282,12 +350,13 @@ public class SqliteItemStateJournalStore internal constructor(
             return try {
                 Files.createDirectories(directory)
                 Files.deleteIfExists(temporary)
-                val opened = openInternal(temporary, worldUuid, create = true)
+                val opened = openInternal(temporary, worldUuid, create = true, maximumRecords)
                 val store = (opened as? SqliteJournalOpenResult.Opened)?.store ?: return opened
                 val written = store.appendBatch(records)
                 val expected = records.filter { it.type == ItemStateJournalRecordType.UPSERT }.associateBy { it.identity }
-                val actual = store.load().associateBy { it.identity }
-                if (written is JournalWriteResult.Failed || actual != expected) {
+                val actual = linkedMapOf<ItemStateJournalIdentity, ItemStateJournalRecord>()
+                val read = store.readRecords { record -> actual[record.identity] = record }
+                if (written is JournalWriteResult.Failed || read is SqliteJournalReadResult.Failed || actual != expected) {
                     store.close()
                     return SqliteJournalOpenResult.Failed("LegacyMigrationVerificationFailed")
                 }
@@ -297,7 +366,7 @@ public class SqliteItemStateJournalStore internal constructor(
                 }
                 store.close()
                 moveAtomically(temporary, database)
-                openInternal(database, worldUuid, create = false)
+                openInternal(database, worldUuid, create = false, maximumRecords)
             } catch (error: IOException) {
                 SqliteJournalOpenResult.Failed(error.javaClass.simpleName)
             } catch (error: SQLException) {
@@ -337,6 +406,7 @@ public class SqliteItemStateJournalStore internal constructor(
             database: Path,
             worldUuid: UUID,
             create: Boolean,
+            maximumRecords: Int,
         ): SqliteJournalOpenResult {
             var connection: Connection? = null
             return try {
@@ -352,10 +422,16 @@ public class SqliteItemStateJournalStore internal constructor(
                     connection = null
                     SqliteJournalOpenResult.Failed(schemaResult)
                 } else {
-                    val store = SqliteItemStateJournalStore(worldUuid, openedConnection)
-                    store.load()
-                    connection = null
-                    SqliteJournalOpenResult.Opened(store)
+                    val store = SqliteItemStateJournalStore(worldUuid, openedConnection, maximumRecords)
+                    if (store.persistedRecordCount > maximumRecords) {
+                        val reason = recordCapacityReason(store.persistedRecordCount, maximumRecords)
+                        store.close()
+                        connection = null
+                        SqliteJournalOpenResult.Failed(reason)
+                    } else {
+                        connection = null
+                        SqliteJournalOpenResult.Opened(store)
+                    }
                 }
             } catch (error: SQLException) {
                 closeQuietly(connection)
@@ -472,6 +548,15 @@ public class SqliteItemStateJournalStore internal constructor(
     }
 }
 
+private fun recordCapacityReason(
+    recordCount: Int,
+    maximumRecords: Int,
+): String = "RecordCapacityExceeded:$recordCount>$maximumRecords"
+
+private class JournalRecordCapacityExceededException(
+    val maximumRecords: Int,
+) : RuntimeException()
+
 private fun java.sql.PreparedStatement.setNullableString(
     index: Int,
     value: String?,
@@ -508,4 +593,14 @@ public sealed interface SqliteJournalOpenResult {
     public data class Failed(
         public val reason: String,
     ) : SqliteJournalOpenResult
+}
+
+public sealed interface SqliteJournalReadResult {
+    public data class Loaded(
+        public val recordCount: Int,
+    ) : SqliteJournalReadResult
+
+    public data class Failed(
+        public val reason: String,
+    ) : SqliteJournalReadResult
 }

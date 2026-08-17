@@ -29,7 +29,9 @@ class GeneratedYamlTemplateFormattingTest {
         val GENERATED_YAML_TEMPLATES =
             listOf(
                 "plugin-bootstrap/src/main/resources/config/config.yml",
+                "plugin-bootstrap/src/main/resources/config/config.en_us.yml",
                 "plugin-bootstrap/src/main/resources/config/item-lifetime.yml",
+                "plugin-bootstrap/src/main/resources/config/item-lifetime.en_us.yml",
                 "plugin-bootstrap/src/main/resources/config/languages/en_us.yml",
                 "plugin-bootstrap/src/main/resources/config/languages/zh_tw.yml",
             )

@@ -21,6 +21,7 @@ class CommunityVirtualStackingCapabilityTest {
 
         assertEquals("community-legacy-drain", provider.id)
         assertFalse(provider.creationCapabilityAvailable)
+        assertNull(provider.configurationFragmentResource)
     }
 
     @Test

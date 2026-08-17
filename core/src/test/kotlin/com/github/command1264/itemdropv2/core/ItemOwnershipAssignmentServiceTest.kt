@@ -27,6 +27,19 @@ class ItemOwnershipAssignmentServiceTest {
         assertEquals(VirtualItemAmount.of(3), repository.state?.virtualAmount)
     }
 
+    @Test
+    fun `assign if unowned imports owner without replacing existing ownership`() {
+        val existing = ItemOwnership(FIRST, 17, listOf(FIRST))
+        val repository = RecordingItemStateRepository(ItemState(ownership = existing, remainingLifetimeSeconds = 60))
+        val service = ItemOwnershipAssignmentService(repository, ItemDisplaySettingsRepository(::settings))
+
+        val result = service.assignIfUnowned(ItemOwnershipAssignmentRequest(ENTITY, "world", listOf(SECOND)))
+
+        assertInstanceOf(ItemOwnershipAssignmentOutcome.Assigned::class.java, result)
+        assertEquals(existing, repository.state?.ownership)
+        assertEquals(0, repository.saveCount)
+    }
+
     private fun settings(): ItemDisplaySettings {
         val template = (DisplayTemplate.parse("%item_display_name%") as DisplayTemplateParseResult.Valid).template
         return ItemDisplaySettings(true, emptySet(), template, template)
@@ -36,6 +49,7 @@ class ItemOwnershipAssignmentServiceTest {
         initial: ItemState?,
     ) : ItemStateRepository {
         var state: ItemState? = initial
+        var saveCount: Int = 0
 
         override fun load(entityId: UUID): ItemStateLoadResult = state?.let(ItemStateLoadResult::Loaded) ?: ItemStateLoadResult.Absent
 
@@ -43,6 +57,7 @@ class ItemOwnershipAssignmentServiceTest {
             entityId: UUID,
             state: ItemState,
         ): ItemStateWriteResult {
+            saveCount += 1
             this.state = state
             return ItemStateWriteResult.Applied
         }

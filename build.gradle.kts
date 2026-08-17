@@ -1,6 +1,7 @@
 import com.diffplug.gradle.spotless.SpotlessExtension
 import dev.detekt.gradle.extensions.DetektExtension
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
+import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.zip.ZipFile
@@ -14,7 +15,7 @@ plugins {
 }
 
 group = "com.github.command1264.itemdropv2"
-version = "1.0.0-SNAPSHOT"
+version = "1.0.0"
 
 val isGitCheckout = file(".git").exists()
 
@@ -39,7 +40,7 @@ val gitCommitFull =
         .lowercase()
         .takeIf { it.matches(Regex("[0-9a-f]{40}")) }
         ?: "unknown"
-val gitCommitShort = if (gitCommitFull == "unknown") "unknown" else gitCommitFull.take(8)
+val gitCommitShort = if (gitCommitFull == "unknown") "unknown" else gitCommitFull.take(7)
 val gitDirty =
     if (gitCommitFull == "unknown") {
         "unknown"
@@ -279,6 +280,166 @@ val verifyCommunitySourceIsolation =
         }
     }
 
+val verifyCommunityDocumentation =
+    tasks.register("verifyCommunityDocumentation") {
+        group = "verification"
+        description = "驗證 Community 公開文件完整、相對連結有效，且不含私有工作區內容。"
+
+        val requiredDocumentation =
+            listOf(
+                "AGENTS.md",
+                "SECURITY.md",
+                "docs/README.md",
+                "docs/architecture.md",
+                "docs/building.md",
+                "docs/commands-and-permissions.md",
+                "docs/configuration.md",
+                "docs/data-and-persistence.md",
+                "docs/display-and-language.md",
+                "docs/item-lifetime.md",
+                "docs/integrations.md",
+                "docs/language-catalog.md",
+                "docs/legacy-migration.md",
+                "docs/merging.md",
+                "docs/metrics-and-privacy.md",
+                "docs/minecraft-compatibility.md",
+                "docs/official-resources.md",
+                "docs/ownership-and-pickup.md",
+                "docs/placeholderapi.md",
+                "docs/rarity.md",
+                "docs/source-attribution.md",
+                "docs/source-publication.md",
+                "docs/troubleshooting.md",
+                "docs/yaml-repair-and-backups.md",
+            )
+        inputs.files(requiredDocumentation)
+        inputs.files(
+            fileTree(rootDir) {
+                include("*.md", "docs/**/*.md")
+                exclude("**/build/**")
+            },
+        )
+
+        doLast {
+            val missingDocumentation = requiredDocumentation.filterNot { file(it).isFile }
+            require(missingDocumentation.isEmpty()) {
+                "Community public documentation is incomplete:\n${missingDocumentation.joinToString("\n")}"
+            }
+
+            val documentationIndex = file("docs/README.md").readText()
+            val unindexedDocumentation =
+                fileTree("docs") {
+                    include("*.md")
+                    exclude("README.md")
+                }.files
+                    .map(File::getName)
+                    .filterNot { name -> documentationIndex.contains("]($name)") }
+                    .sorted()
+            require(unindexedDocumentation.isEmpty()) {
+                "Community public documentation is missing from docs/README.md:\n" +
+                    unindexedDocumentation.joinToString("\n")
+            }
+
+            val documentationFiles =
+                fileTree(rootDir) {
+                    include("*.md", "docs/**/*.md")
+                    exclude("**/build/**")
+                }.files
+            val forbiddenTokens =
+                listOf(
+                    ".test-server",
+                    "ItemDropV2Kt",
+                    "worktrees/",
+                    "worktrees\\",
+                    "codex/",
+                    "capability:virtual-stacking-pro",
+                    "capability/virtual-stacking-pro",
+                    "platform:view-paper",
+                    "platform/view-paper",
+                    "platform:view-adaptive",
+                    "platform/view-adaptive",
+                    "platform:view-pro",
+                    "platform/view-pro",
+                    "platform:view-runtime",
+                    "platform/view-runtime",
+                    "distribution:pro",
+                    "distribution/pro",
+                    "distribution:runtime",
+                    "distribution/runtime",
+                    "docs/superpowers",
+                    "docs/bugs",
+                )
+            val externalUrl = Regex("https?://[^\\s)>]+")
+            val windowsAbsolutePath = Regex("(?i)[a-z]:[\\\\/]")
+            val uncAbsolutePath = Regex("\\\\\\\\[^\\\\\\s]+\\\\[^\\\\\\s]+")
+            val posixAbsolutePath = Regex("(?<![A-Za-z0-9._~-])/(?:[A-Za-z0-9._~-]+/)*[A-Za-z0-9._~-]+")
+            val allowedSlashCommand = Regex("/(?:itemdrop|idrop|drop|itemdrops|idrops|drops)(?=`|\\s)")
+            val contentViolations =
+                documentationFiles.flatMap { source ->
+                    val relativePath = source.relativeTo(rootDir).invariantSeparatorsPath
+                    val text = source.readText()
+                    val sanitizedPathText = text.replace(externalUrl, "").replace(allowedSlashCommand, "")
+                    buildList {
+                        forbiddenTokens.filter(text::contains).forEach { token ->
+                            add("$relativePath: $token")
+                        }
+                        if (windowsAbsolutePath.containsMatchIn(sanitizedPathText)) {
+                            add("$relativePath: Windows absolute path")
+                        }
+                        if (uncAbsolutePath.containsMatchIn(sanitizedPathText)) {
+                            add("$relativePath: UNC absolute path")
+                        }
+                        if (posixAbsolutePath.containsMatchIn(sanitizedPathText)) {
+                            add("$relativePath: POSIX absolute path")
+                        }
+                    }
+                }
+            require(contentViolations.isEmpty()) {
+                "Private implementation or workspace content leaked into Community documentation:\n" +
+                    contentViolations.sorted().joinToString("\n")
+            }
+
+            val markdownLink = Regex("!?\\[[^]]*]\\(([^)]+)\\)")
+            val linkViolations =
+                documentationFiles.flatMap { source ->
+                    markdownLink
+                        .findAll(source.readText())
+                        .mapNotNull { match ->
+                            val rawTarget =
+                                match.groupValues[1]
+                                    .trim()
+                                    .substringBefore(" \"")
+                                    .removeSurrounding("<", ">")
+                            if (
+                                rawTarget.isBlank() ||
+                                rawTarget.startsWith("#") ||
+                                rawTarget.startsWith("https://") ||
+                                rawTarget.startsWith("http://") ||
+                                rawTarget.startsWith("mailto:")
+                            ) {
+                                return@mapNotNull null
+                            }
+                            val targetWithoutFragment = rawTarget.substringBefore('#')
+                            if (targetWithoutFragment.isBlank()) {
+                                return@mapNotNull null
+                            }
+                            val decodedTarget = URLDecoder.decode(targetWithoutFragment, StandardCharsets.UTF_8.name())
+                            val resolvedTarget = source.parentFile.resolve(decodedTarget).normalize()
+                            val relativeSource = source.relativeTo(rootDir).invariantSeparatorsPath
+                            when {
+                                !resolvedTarget.toPath().startsWith(rootDir.toPath().normalize()) ->
+                                    "$relativeSource: link escapes publication root: $rawTarget"
+                                !resolvedTarget.exists() -> "$relativeSource: missing link target: $rawTarget"
+                                else -> null
+                            }
+                        }.toList()
+                }
+            require(linkViolations.isEmpty()) {
+                "Community documentation contains invalid relative links:\n${linkViolations.sorted().joinToString("\n")}"
+            }
+        }
+    }
+
 val verifyCommunityArtifact =
     tasks.register("verifyCommunityArtifact") {
         group = "verification"
@@ -300,6 +461,25 @@ val verifyCommunityArtifact =
             ZipFile(artifact).use { zip ->
                 val entries = zip.entries().asSequence().toList()
                 val names = entries.map { it.name }.toSet()
+                val forbiddenPublicationEntries =
+                    names.filter { path ->
+                        path.startsWith("community-public-source/") ||
+                            path in
+                            setOf(
+                                "SOURCE-MANIFEST.sha256",
+                                "SOURCE-PROVENANCE.md",
+                                "LICENSE",
+                                "NOTICE",
+                                "README.md",
+                                "CONTRIBUTING.md",
+                                "TRADEMARKS.md",
+                                "THIRD-PARTY-NOTICES.md",
+                            )
+                    }
+                require(forbiddenPublicationEntries.isEmpty()) {
+                    "Community artifact contains source-publication metadata:\n" +
+                        forbiddenPublicationEntries.sorted().joinToString("\n")
+                }
                 val backendService = "META-INF/services/com.github.command1264.itemdropv2.core.BackendProvider"
                 val capabilityService =
                     "META-INF/services/com.github.command1264.itemdropv2.capability.virtualstacking.VirtualStackingCapabilityProvider"
@@ -375,5 +555,6 @@ tasks.named("check") {
     dependsOn(communityProjectPaths.map { "$it:check" })
     dependsOn("spotlessCheck")
     dependsOn(verifyCommunitySourceIsolation)
+    dependsOn(verifyCommunityDocumentation)
     dependsOn(verifyCommunityArtifact)
 }

@@ -38,7 +38,7 @@ class SqliteItemStateJournalPerformanceTest {
             assertTrue(elapsed < MAXIMUM_ELAPSED_MILLIS, "population=$population elapsed=${elapsed}ms")
             assertTrue(bytes in 1..MAXIMUM_DATABASE_BYTES, "population=$population bytes=$bytes")
             assertOpened(SqliteItemStateJournalStore.open(database, template.identity.worldUuid)).use { store ->
-                assertEquals(population, store.load().size)
+                assertEquals(population, store.readAllRecordsForTest().size)
             }
             reporter.publishEntry("sqlite-journal-$population", "elapsed=${elapsed}ms bytes=$bytes")
         }

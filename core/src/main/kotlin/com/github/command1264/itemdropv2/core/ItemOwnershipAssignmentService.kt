@@ -43,7 +43,16 @@ public class ItemOwnershipAssignmentService(
     private val repository: ItemStateRepository,
     private val settingsRepository: ItemDisplaySettingsRepository,
 ) {
-    public fun assign(request: ItemOwnershipAssignmentRequest): ItemOwnershipAssignmentOutcome {
+    public fun assign(request: ItemOwnershipAssignmentRequest): ItemOwnershipAssignmentOutcome =
+        assign(request, preserveExistingOwnership = false)
+
+    public fun assignIfUnowned(request: ItemOwnershipAssignmentRequest): ItemOwnershipAssignmentOutcome =
+        assign(request, preserveExistingOwnership = true)
+
+    private fun assign(
+        request: ItemOwnershipAssignmentRequest,
+        preserveExistingOwnership: Boolean,
+    ): ItemOwnershipAssignmentOutcome {
         val settings = settingsRepository.settings()
         val ignoredReason =
             when {
@@ -55,7 +64,12 @@ public class ItemOwnershipAssignmentService(
             ?.let(ItemOwnershipAssignmentOutcome::Ignored)
             ?: prepareState(request.entityId).let { prepared ->
                 when (prepared) {
-                    is PreparedAssignmentState.Ready -> save(request, prepared.state, settings.ownership.protectionSeconds)
+                    is PreparedAssignmentState.Ready ->
+                        if (preserveExistingOwnership && prepared.state.ownership != null) {
+                            ItemOwnershipAssignmentOutcome.Assigned(prepared.state)
+                        } else {
+                            save(request, prepared.state, settings.ownership.protectionSeconds)
+                        }
                     is PreparedAssignmentState.Rejected -> ItemOwnershipAssignmentOutcome.Rejected(prepared.reason)
                     is PreparedAssignmentState.Failed -> ItemOwnershipAssignmentOutcome.Failed(prepared.errorType)
                 }

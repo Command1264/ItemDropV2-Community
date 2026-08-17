@@ -15,12 +15,15 @@ import com.github.command1264.itemdropv2.platform.bukkit.ItemDisplaySettingsPubl
 import com.github.command1264.itemdropv2.platform.bukkit.LegacyConfigMigrationReport
 import org.bukkit.configuration.file.YamlConfiguration
 import java.io.File
+import java.io.IOException
 import java.io.InputStreamReader
 import java.nio.ByteBuffer
 import java.nio.charset.CharacterCodingException
 import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Locale
 
 internal data class EmbeddedYamlResource(
     val bytes: ByteArray,
@@ -41,14 +44,17 @@ internal class RuntimeConfigurationFactory(
     private val configFileReplacer: ((Path, Path) -> Unit)? = null,
     private val messageCatalogReloader: ((BukkitMessageCatalogStore, PluginMessageLanguage) -> BukkitMessageCatalogReloadResult)? = null,
     private val paperClientSideTranslationSettingSupported: Boolean = false,
-    private val configurationFragmentResource: String? = null,
+    private val virtualStackingSettingSupported: Boolean = false,
+    private val configurationFragmentResources: List<String> = emptyList(),
     private val additionalPublicationPreparer:
         ((ItemDisplaySettings, ItemDisplaySettings) -> ItemDisplaySettingsPublicationPreparation)? = null,
+    private val countryCodeProvider: () -> String? = { Locale.getDefault(Locale.Category.FORMAT).country },
 ) {
     fun create(): RuntimeConfiguration {
-        val embeddedDefaults = loadConfigDefaults()
+        val templateLocale = selectTemplateLocale()
+        val embeddedDefaults = loadConfigDefaults(templateLocale)
         val defaults = embeddedDefaults.configuration
-        val embeddedLifetimeDefaults = loadYamlResource(LIFETIME_RESOURCE)
+        val embeddedLifetimeDefaults = loadYamlResource(templateLocale.lifetimeResource)
         val lifetimeDefaults = embeddedLifetimeDefaults.configuration
         val defaultSettings = loadDisplaySettings(defaults)
         val lifetimeSettings = loadLifetimeSettings(lifetimeDefaults)
@@ -78,7 +84,11 @@ internal class RuntimeConfigurationFactory(
                 settingsTransformer = { settings ->
                     settings.copy(placeholders = messageCatalog.displayPlaceholders(settings.messageLanguage))
                 },
-                loader = BukkitDisplaySettingsLoader(paperClientSideTranslationSettingSupported),
+                loader =
+                    BukkitDisplaySettingsLoader(
+                        paperClientSideTranslationSettingSupported,
+                        virtualStackingSettingSupported,
+                    ),
                 publicationPreparer = { previous, settings -> preparePublication(messageCatalog, previous, settings) },
                 migrationReporter = migrationReporter,
                 configKeyMigrationReporter = configKeyMigrationReporter,
@@ -130,12 +140,9 @@ internal class RuntimeConfigurationFactory(
         )
     }
 
-    private fun loadConfigDefaults(): EmbeddedYamlResource {
-        val base = loadYamlResource(CONFIG_RESOURCE)
-        val fragmentPath = configurationFragmentResource ?: return base
-        val fragment =
-            requireNotNull(resourceLoader.getResourceAsStream(fragmentPath)) { "embedded $fragmentPath is missing" }
-                .use { decodeStrictUtf8(it.readBytes(), fragmentPath) }
+    private fun loadConfigDefaults(templateLocale: ConfigurationTemplateLocale): EmbeddedYamlResource {
+        val base = loadYamlResource(templateLocale.configResource)
+        if (configurationFragmentResources.isEmpty()) return base
         val baseText = base.bytes.toString(StandardCharsets.UTF_8)
         val matches = ITEMS_ROOT.findAll(baseText).toList()
         require(matches.size == 1) {
@@ -143,8 +150,18 @@ internal class RuntimeConfigurationFactory(
         }
         val match = matches.single()
         val newline = if (match.value.endsWith("\r\n")) "\r\n" else "\n"
-        val normalizedFragment = fragment.replace("\r\n", "\n").trimEnd().replace("\n", newline)
-        val combined = baseText.replaceRange(match.range, match.value + normalizedFragment + newline + newline)
+        val fragments =
+            configurationFragmentResources.map { fragmentPath ->
+                val localizedFragmentPath = templateLocale.localizeFragment(fragmentPath)
+                requireNotNull(resourceLoader.getResourceAsStream(localizedFragmentPath)) {
+                    "embedded $localizedFragmentPath is missing"
+                }.use { decodeStrictUtf8(it.readBytes(), localizedFragmentPath) }
+                    .replace("\r\n", "\n")
+                    .trimEnd()
+                    .replace("\n", newline)
+            }
+        val combinedFragments = fragments.joinToString(newline + newline, postfix = newline + newline)
+        val combined = baseText.replaceRange(match.range, match.value + combinedFragments)
         val bytes = combined.toByteArray(StandardCharsets.UTF_8)
         val configuration =
             try {
@@ -154,6 +171,35 @@ internal class RuntimeConfigurationFactory(
             }
         return EmbeddedYamlResource(bytes, configuration)
     }
+
+    private fun selectTemplateLocale(): ConfigurationTemplateLocale {
+        val configFile = File(dataFolder, "config.yml")
+        val countryLocale = ConfigurationTemplateLocaleSelector.select(countryCodeProvider())
+        val configuredLanguage = readConfiguredLanguage(configFile)
+        return when {
+            configuredLanguage == null -> countryLocale
+            PluginMessageLanguage.parse(configuredLanguage) == PluginMessageLanguage.ZH_TW ->
+                ConfigurationTemplateLocale.ZH_TW
+            else -> ConfigurationTemplateLocale.EN_US
+        }
+    }
+
+    private fun readConfiguredLanguage(configFile: File): String? =
+        if (!configFile.isFile) {
+            null
+        } else {
+            try {
+                val bytes = Files.readAllBytes(configFile.toPath())
+                val text = decodeStrictUtf8(bytes, configFile.name)
+                YamlConfiguration().apply { loadFromString(text) }.getString(MESSAGE_LANGUAGE_PATH)
+            } catch (_: IOException) {
+                null
+            } catch (_: IllegalArgumentException) {
+                null
+            } catch (_: org.bukkit.configuration.InvalidConfigurationException) {
+                null
+            }
+        }
 
     private fun reloadCatalog(
         messageCatalog: BukkitMessageCatalogStore,
@@ -201,7 +247,13 @@ internal class RuntimeConfigurationFactory(
     }
 
     private fun loadDisplaySettings(configuration: YamlConfiguration): ItemDisplaySettings =
-        when (val loaded = BukkitDisplaySettingsLoader(paperClientSideTranslationSettingSupported).load(configuration)) {
+        when (
+            val loaded =
+                BukkitDisplaySettingsLoader(
+                    paperClientSideTranslationSettingSupported,
+                    virtualStackingSettingSupported,
+                ).load(configuration)
+        ) {
             is BukkitDisplaySettingsLoadResult.Loaded -> loaded.settings
             is BukkitDisplaySettingsLoadResult.Invalid ->
                 error("embedded config.yml is invalid: ${loaded.errors.joinToString("; ")}")
@@ -215,8 +267,7 @@ internal class RuntimeConfigurationFactory(
         }
 
     private companion object {
-        private const val CONFIG_RESOURCE = "config/config.yml"
-        private const val LIFETIME_RESOURCE = "config/item-lifetime.yml"
+        private const val MESSAGE_LANGUAGE_PATH = "general.language"
         private val ITEMS_ROOT = Regex("(?m)^items:\\r?\\n")
     }
 }

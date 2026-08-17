@@ -14,12 +14,21 @@ import java.io.InputStreamReader
 public enum class ManagementMessageKey(
     public val path: String,
 ) {
+    PREFIX("command.prefix"),
     NO_PERMISSION("command.no-permission"),
     HELP_HEADER("command.help.header"),
     HELP_TOGGLE("command.help.toggle"),
     HELP_RELOAD("command.help.reload"),
     HELP_INFO("command.help.info"),
-    INFO("command.info"),
+    INFO_HEADER("command.info-header"),
+    INFO_VERSION("command.info-version"),
+    INFO_EDITION("command.info-edition"),
+    INFO_SERVER("command.info-server"),
+    INFO_BACKEND("command.info-backend"),
+    INFO_PERSISTENCE("command.info-persistence"),
+    INFO_VIRTUAL_STACKING("command.info-virtual-stacking"),
+    INFO_LANGUAGES("command.info-languages"),
+    INFO_FOOTER("command.info-footer"),
     TOGGLE_ENABLED("command.toggle.enabled"),
     TOGGLE_DISABLED("command.toggle.disabled"),
     TOGGLE_ALREADY_ENABLED("command.toggle.already-enabled"),
@@ -32,6 +41,33 @@ public enum class ManagementMessageKey(
     RELOAD_LANGUAGE_FALLBACK_CREATED("command.reload.language-fallback-created"),
     CONFIG_PARSE_RECOVERED("command.config-parse-recovered"),
     ROOT_USAGE("command.root-usage"),
+}
+
+public data class ManagementCommandInfo(
+    public val edition: String,
+    public val server: String,
+    public val backend: String,
+    public val persistence: String,
+    public val virtualStacking: String,
+    public val pluginLanguage: String,
+    public val minecraftLanguage: String,
+) {
+    init {
+        val values =
+            listOf(
+                edition,
+                server,
+                backend,
+                persistence,
+                virtualStacking,
+                pluginLanguage,
+                minecraftLanguage,
+            )
+        require(values.all(String::isNotBlank)) { "management command information fields must not be blank" }
+        require(values.all(::isSafeManagementInformationValue)) {
+            "management command information fields must be bounded single-line plain text"
+        }
+    }
 }
 
 public class BukkitManagementMessageCatalog private constructor(
@@ -83,14 +119,20 @@ public class BukkitManagementCommandController(
     private val service: ManagementCommandService,
     private val language: () -> PluginMessageLanguage,
     private val messages: BukkitManagementMessageCatalog,
+    private val pluginName: String,
     private val version: String,
-    backendId: String? = null,
-    private val backendIdProvider: () -> String = { requireNotNull(backendId) },
+    private val infoProvider: () -> ManagementCommandInfo,
     private val failureLogger: (String) -> Unit,
     private val configParseRecoveryConsumer: () -> ConfigParseRecoveryReport? = { null },
     private val additionalYamlRecoveryConsumer: () -> List<ConfigParseRecoveryReport> = { emptyList() },
 ) : CommandExecutor,
     TabCompleter {
+    init {
+        require(pluginName.isNotBlank() && isSafeManagementInformationValue(pluginName)) {
+            "plugin name must be bounded single-line plain text"
+        }
+    }
+
     @Suppress("ReturnCount")
     override fun onCommand(
         sender: CommandSender,
@@ -151,8 +193,37 @@ public class BukkitManagementCommandController(
 
     private fun info(sender: CommandSender): Boolean {
         if (!sender.hasPermission(INFO_PERMISSION)) return deny(sender)
-        send(sender, ManagementMessageKey.INFO, mapOf("version" to version, "backend" to backendIdProvider()))
+        val info = infoProvider()
+        sendInformationBoundary(sender, ManagementMessageKey.INFO_HEADER)
+        send(sender, ManagementMessageKey.INFO_VERSION, mapOf("version" to version))
+        send(sender, ManagementMessageKey.INFO_EDITION, mapOf("edition" to info.edition))
+        send(sender, ManagementMessageKey.INFO_SERVER, mapOf("server" to info.server))
+        send(sender, ManagementMessageKey.INFO_BACKEND, mapOf("backend" to info.backend))
+        send(sender, ManagementMessageKey.INFO_PERSISTENCE, mapOf("persistence" to info.persistence))
+        send(
+            sender,
+            ManagementMessageKey.INFO_VIRTUAL_STACKING,
+            mapOf("virtual_stacking" to info.virtualStacking),
+        )
+        send(
+            sender,
+            ManagementMessageKey.INFO_LANGUAGES,
+            mapOf(
+                "plugin_language" to info.pluginLanguage,
+                "minecraft_language" to info.minecraftLanguage,
+            ),
+        )
+        sendInformationBoundary(sender, ManagementMessageKey.INFO_FOOTER)
         return true
+    }
+
+    private fun sendInformationBoundary(
+        sender: CommandSender,
+        key: ManagementMessageKey,
+    ) {
+        val selectedLanguage = language()
+        val prefix = renderPrefix(selectedLanguage)
+        sender.sendMessage(messages.render(selectedLanguage, key, mapOf("prefix" to prefix)))
     }
 
     private fun reload(sender: CommandSender): Boolean {
@@ -240,9 +311,18 @@ public class BukkitManagementCommandController(
         key: ManagementMessageKey,
         placeholders: Map<String, String> = emptyMap(),
     ): Boolean {
-        sender.sendMessage(messages.render(language(), key, placeholders))
+        val selectedLanguage = language()
+        val prefix = renderPrefix(selectedLanguage)
+        sender.sendMessage(prefix + messages.render(selectedLanguage, key, placeholders))
         return true
     }
+
+    private fun renderPrefix(selectedLanguage: PluginMessageLanguage): String =
+        messages.render(
+            selectedLanguage,
+            ManagementMessageKey.PREFIX,
+            mapOf("plugin_name" to pluginName),
+        )
 
     private companion object {
         private const val BASIC_PERMISSION = "itemdrop.commands.basic"
@@ -290,5 +370,17 @@ private fun senderSafeFailureReason(reason: String): String {
 }
 
 private const val MAX_FAILURE_REASON_LENGTH = 240
+private const val MAX_INFORMATION_VALUE_LENGTH = 120
 private const val UNKNOWN_FAILURE_REASON = "unknown failure"
 private const val ELLIPSIS = "…"
+
+private fun isSafeManagementInformationValue(value: String): Boolean =
+    value.length <= MAX_INFORMATION_VALUE_LENGTH &&
+        value.none { character ->
+            character == '&' ||
+                character == '§' ||
+                character.isISOControl() ||
+                Character.getType(character) == Character.FORMAT.toInt() ||
+                Character.getType(character) == Character.LINE_SEPARATOR.toInt() ||
+                Character.getType(character) == Character.PARAGRAPH_SEPARATOR.toInt()
+        }

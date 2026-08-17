@@ -2,6 +2,10 @@
 .gradle/
 .kotlin/
 **/build/
+**/bin/
+
+# Community Source Available 匯出物只存在於本機 build output，不得成為 private tracked source。
+/build/community-public-source/
 
 # IDE 與編輯器
 .idea/
