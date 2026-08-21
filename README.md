@@ -4,6 +4,12 @@ ItemDropV2 Community 是支援 Spigot／Paper `1.14+` 的 Minecraft 掉落物管
 提供掉落物名稱、數量、稀有度、擁有權、拾取保護、來源判定、合併、壽命、PDC、世界排除、
 PlaceholderAPI 與管理指令，並使用 Bukkit server-side language catalog 顯示物品名稱。
 
+## 下載與平台頁面
+
+- [GitHub Release](https://github.com/Command1264/ItemDropV2-Community/releases/tag/v1.0.0)：Community `1.0.0` 的正式下載與公開原始碼。
+- [Spigot](https://www.spigotmc.org/resources/itemdropv2-community.138160/)：Community 的 Spigot 上傳／發布頁面。
+- [PaperMC Hangar](https://hangar.papermc.io/Command1/ItemDropV2)：Community 的 Hangar 上傳／發布頁面。
+
 ## Source Available 授權
 
 本 repository 公開原始碼供閱讀、稽核、學習、允許用途的修改與散布，但它不是 OSI 定義的
